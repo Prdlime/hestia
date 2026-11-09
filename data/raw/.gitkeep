@@ -1,0 +1,3 @@
+# Place raw NASA FIRMS MODIS / VIIRS CSV files here (e.g. modis_malaysia.csv, viirs_malaysia.csv).
+# If no CSV files are present, running `python -m scripts.harmonize_data` (or starting the backend)
+# will automatically synthesize a realistic 2005-2025 Malaysian fire hotspot dataset.
