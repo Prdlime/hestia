@@ -17,13 +17,16 @@ class SpatialDuckDBEngine:
         self._con: Optional[duckdb.DuckDBPyConnection] = None
         self._spatial_loaded: bool = False
         self._metadata: Dict = {}
+        self._parquet_mtime: float = 0.0
 
     def initialize(self) -> None:
         """Ensure Parquet files exist, initialize DuckDB, and load tables into memory."""
         self._metadata = run_harmonization_pipeline(force=False)
         data_dir: Path = get_data_dir()
-        fires_path = str(data_dir / "harmonized_fires.parquet")
+        fires_file = data_dir / "harmonized_fires.parquet"
+        fires_path = str(fires_file)
         cells_path = str(data_dir / "active_cells.parquet")
+        self._parquet_mtime = fires_file.stat().st_mtime if fires_file.exists() else 0.0
 
         con = duckdb.connect(database=":memory:")
         try:
@@ -50,7 +53,9 @@ class SpatialDuckDBEngine:
         return self._metadata
 
     def cursor(self) -> duckdb.DuckDBPyConnection:
-        if self._con is None:
+        fires_file = get_data_dir() / "harmonized_fires.parquet"
+        curr_mtime = fires_file.stat().st_mtime if fires_file.exists() else 0.0
+        if self._con is None or curr_mtime != self._parquet_mtime:
             self.initialize()
         assert self._con is not None
         return self._con.cursor()

@@ -183,8 +183,8 @@ def run_harmonization_pipeline(force: bool = False) -> Dict:
         daily_df, hex_pool = _ingest_raw_firms_csvs(csv_files)
         source_mode = "nasa_firms_csv"
     else:
-        print("[ETL] No raw CSVs in /data/raw. Generating multi-decade Malaysian dataset (2005-2025)...")
-        daily_df, hex_pool = generate_malaysia_raw_observations(2005, 2025)
+        print("[ETL] No raw CSVs in /data/raw. Generating multi-decade dataset (2005-2026)...")
+        daily_df, hex_pool = generate_malaysia_raw_observations(2005, 2026)
         source_mode = "malaysia_multi_decade_model"
 
     # Step 2: Fit Overlap Calibration Factor (2012-present co-located observations)
