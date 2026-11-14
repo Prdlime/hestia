@@ -12,8 +12,8 @@ frontend/dist/
 .vite/
 
 # Data volume outputs (keep folder structure, ignore large datasets)
-data/*.parquet
-data/*.json
+data/**/*.parquet
+data/**/*.json
 data/raw/*.csv
 !data/raw/.gitkeep
 
