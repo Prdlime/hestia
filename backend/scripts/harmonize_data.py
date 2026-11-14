@@ -21,6 +21,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -33,11 +34,27 @@ from scripts.sample_malaysia import generate_malaysia_raw_observations
 
 
 def get_data_dir() -> Path:
+    """Resolve data directory, falling back to /tmp on read-only serverless runtimes."""
     env_dir = os.environ.get("DATA_DIR")
     if env_dir:
         return Path(env_dir)
-    # Fallback to repo ./data relative to backend/
-    return Path(__file__).resolve().parent.parent.parent / "data"
+
+    repo_data_dir = Path(__file__).resolve().parent.parent.parent / "data"
+    if (
+        (repo_data_dir / "harmonized_fires.parquet").exists()
+        and (repo_data_dir / "active_cells.parquet").exists()
+        and (repo_data_dir / "metadata.json").exists()
+    ):
+        return repo_data_dir
+
+    if os.environ.get("VERCEL"):
+        return Path(tempfile.gettempdir()) / "hestia_data"
+
+    try:
+        repo_data_dir.mkdir(parents=True, exist_ok=True)
+        return repo_data_dir
+    except OSError:
+        return Path(tempfile.gettempdir()) / "hestia_data"
 
 
 def _infer_region_name(lat: float, lon: float) -> str:

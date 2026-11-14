@@ -8,7 +8,7 @@ import {
 } from "../types/api";
 
 const API_BASE_URL =
-  import.meta.env.VITE_API_URL?.replace(/\/$/, "") || "http://localhost:8000";
+  import.meta.env.VITE_API_URL?.replace(/\/$/, "") ?? "";
 
 export async function fetchSpatialSummary(
   payload: AOIQueryPayload,
