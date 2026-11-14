@@ -10,6 +10,7 @@ venv/
 node_modules/
 frontend/dist/
 .vite/
+*.tsbuildinfo
 
 # Data volume outputs (keep folder structure, ignore large datasets)
 data/**/*.parquet
