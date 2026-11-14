@@ -10,12 +10,18 @@ from typing import AsyncGenerator, Dict
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.analytics import query_calendar_series, query_spatial_summary
+from app.analytics import (
+    query_calendar_series,
+    query_spatial_summary,
+    query_trend_series,
+)
 from app.db import db_engine
 from app.schemas import (
     AOIQueryRequest,
+    AOITrendRequest,
     CalendarSeriesResponse,
     SpatialSummaryResponse,
+    TrendSeriesResponse,
 )
 
 
@@ -67,4 +73,15 @@ def post_calendar_series(payload: AOIQueryRequest) -> CalendarSeriesResponse:
         date_start=payload.date_start,
         date_end=payload.date_end,
         sensor_mode=payload.sensor_mode,
+    )
+
+
+@app.post("/api/aoi/trend", response_model=TrendSeriesResponse)
+def post_trend_series(payload: AOITrendRequest) -> TrendSeriesResponse:
+    return query_trend_series(
+        aoi_dict=payload.aoi.model_dump(),
+        date_start=payload.date_start,
+        date_end=payload.date_end,
+        sensor_mode=payload.sensor_mode,
+        granularity=payload.granularity,
     )

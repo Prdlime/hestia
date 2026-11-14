@@ -16,6 +16,18 @@ class GeoJSONPolygon(BaseModel):
     )
 
 
+TimescaleType = Literal["daily", "weekly", "monthly", "yearly", "5y", "10y"]
+
+
+def _normalize_sensor_mode(v: str) -> str:
+    clean = v.strip().lower()
+    if "modis" in clean:
+        return "modis"
+    if "viirs" in clean:
+        return "viirs"
+    return "harmonized"
+
+
 class AOIQueryRequest(BaseModel):
     aoi: GeoJSONPolygon
     date_start: str = Field(..., examples=["2015-01-01"])
@@ -25,12 +37,20 @@ class AOIQueryRequest(BaseModel):
     @field_validator("sensor_mode")
     @classmethod
     def normalize_sensor_mode(cls, v: str) -> str:
-        clean = v.strip().lower()
-        if "modis" in clean:
-            return "modis"
-        if "viirs" in clean:
-            return "viirs"
-        return "harmonized"
+        return _normalize_sensor_mode(v)
+
+
+class AOITrendRequest(BaseModel):
+    aoi: GeoJSONPolygon
+    date_start: str = Field(..., examples=["2025-01-01"])
+    date_end: str = Field(..., examples=["2025-12-31"])
+    sensor_mode: str = Field(default="harmonized", examples=["harmonized"])
+    granularity: TimescaleType = Field(default="weekly")
+
+    @field_validator("sensor_mode")
+    @classmethod
+    def normalize_sensor_mode(cls, v: str) -> str:
+        return _normalize_sensor_mode(v)
 
 
 class SpatialHexRecord(BaseModel):
@@ -61,3 +81,19 @@ class CalendarSeriesResponse(BaseModel):
     status: str = "success"
     summary: CalendarSeasonSummary
     time_series: List[CalendarTimeSeriesPoint]
+
+
+class TrendPoint(BaseModel):
+    slice_start: str
+    slice_end: str
+    label: str
+    count: int
+    historical_mean: float
+    z_score: float
+    is_anomaly: bool
+
+
+class TrendSeriesResponse(BaseModel):
+    status: str = "success"
+    granularity: TimescaleType
+    time_series: List[TrendPoint]
