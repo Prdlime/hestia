@@ -1,8 +1,10 @@
 import {
   AOIQueryPayload,
+  AOITrendPayload,
   CalendarSeriesResponse,
   HealthMetadata,
   SpatialSummaryResponse,
+  TrendSeriesResponse,
 } from "../types/api";
 
 const API_BASE_URL =
@@ -36,6 +38,22 @@ export async function fetchCalendarSeries(
   });
   if (!res.ok) {
     throw new Error(`Calendar API failed: ${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchTrendSeries(
+  payload: AOITrendPayload,
+  signal?: AbortSignal
+): Promise<TrendSeriesResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/aoi/trend`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!res.ok) {
+    throw new Error(`Trend API failed: ${res.status} ${res.statusText}`);
   }
   return res.json();
 }

@@ -18,3 +18,34 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #475569;
 }
+
+/* Override MapLibre & Deck.gl grab cursor when in polygon or box drawing mode */
+.map-drawing-active,
+.map-drawing-active .maplibregl-canvas-container,
+.map-drawing-active .maplibregl-canvas,
+.map-drawing-active canvas,
+.map-drawing-active .deck-canvas {
+  cursor: crosshair !important;
+}
+
+/* Hide native trailing calendar picker icon so custom icon buttons control the popup */
+input.custom-date-input {
+  color-scheme: dark;
+  -webkit-appearance: none;
+  appearance: none;
+}
+input.custom-date-input::-webkit-calendar-picker-indicator {
+  display: none !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  pointer-events: none !important;
+}
+input.custom-date-input::-webkit-inner-spin-button,
+input.custom-date-input::-webkit-clear-button {
+  display: none !important;
+}

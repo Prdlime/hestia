@@ -1,18 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
-import { Calendar, Flame, RotateCcw, Sparkles } from "lucide-react";
-import { CalendarSummary, CalendarTimeSeriesPoint, SensorMode } from "../types/api";
+import { Calendar, Flame, Sparkles } from "lucide-react";
+import {
+  CalendarSummary,
+  CalendarTimeSeriesPoint,
+  SensorMode,
+} from "../types/api";
+import { InfoTooltip, Tooltip } from "./Tooltip";
 
 interface CalendarHeatmapProps {
   timeSeries: CalendarTimeSeriesPoint[];
   summary: CalendarSummary;
   sensorMode: SensorMode;
-  selectedWeekStart: string | null;
-  onSelectWeek: (
-    weekStart: string | null,
-    weekEnd: string | null,
-    focusYear?: number
-  ) => void;
+  highlightedDateRange?: { start: string; end: string } | null;
+  onJumpToDate: (dateStr: string) => void;
 }
 
 const MONTH_APPROX_LABELS: Record<number, string> = {
@@ -53,48 +54,61 @@ export const CalendarHeatmap: React.FC<CalendarHeatmapProps> = ({
   timeSeries,
   summary,
   sensorMode,
-  selectedWeekStart,
-  onSelectWeek,
+  highlightedDateRange,
+  onJumpToDate,
 }) => {
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<echarts.ECharts | null>(null);
   const [colorMetric, setColorMetric] = useState<"count" | "zscore">("count");
 
-  const { years, weeks, cellMap, maxCount, anomalyPoints } = useMemo(() => {
-    const yearSet = new Set<number>();
-    const map = new Map<string, CalendarTimeSeriesPoint>();
-    let highestCount = 50;
-    const anomalies: [number, number, number][] = [];
+  const { years, weeks, cellMap, maxCount, anomalyPoints, highlightPoints } =
+    useMemo(() => {
+      const yearSet = new Set<number>();
+      const map = new Map<string, CalendarTimeSeriesPoint>();
+      let highestCount = 50;
+      const anomalies: [number, number, number][] = [];
+      const highlights: [number, number, number][] = [];
 
-    for (const pt of timeSeries) {
-      const { year, week } = getIsoYearAndWeek(pt.date);
-      yearSet.add(year);
-      map.set(`${year}-${week}`, pt);
-      if (pt.harmonized_count > highestCount) {
-        highestCount = pt.harmonized_count;
-      }
-    }
-
-    const sortedYears = Array.from(yearSet).sort((a, b) => a - b);
-    const weekLabels = Array.from({ length: 52 }, (_, i) => i + 1);
-
-    sortedYears.forEach((yr, yIdx) => {
-      weekLabels.forEach((wk, xIdx) => {
-        const pt = map.get(`${yr}-${wk}`);
-        if (pt && pt.is_anomaly) {
-          anomalies.push([xIdx, yIdx, pt.z_score]);
+      for (const pt of timeSeries) {
+        const { year, week } = getIsoYearAndWeek(pt.date);
+        yearSet.add(year);
+        map.set(`${year}-${week}`, pt);
+        if (pt.harmonized_count > highestCount) {
+          highestCount = pt.harmonized_count;
         }
-      });
-    });
+      }
 
-    return {
-      years: sortedYears,
-      weeks: weekLabels,
-      cellMap: map,
-      maxCount: highestCount,
-      anomalyPoints: anomalies,
-    };
-  }, [timeSeries]);
+      const sortedYears = Array.from(yearSet).sort((a, b) => a - b);
+      const weekLabels = Array.from({ length: 52 }, (_, i) => i + 1);
+
+      sortedYears.forEach((yr, yIdx) => {
+        weekLabels.forEach((wk, xIdx) => {
+          const pt = map.get(`${yr}-${wk}`);
+          if (pt && pt.is_anomaly) {
+            anomalies.push([xIdx, yIdx, pt.z_score]);
+          }
+          if (pt) {
+            const wkEnd = addSixDays(pt.date);
+            const isHighlighted =
+              highlightedDateRange &&
+              wkEnd >= highlightedDateRange.start &&
+              pt.date <= highlightedDateRange.end;
+            if (isHighlighted) {
+              highlights.push([xIdx, yIdx, 1]);
+            }
+          }
+        });
+      });
+
+      return {
+        years: sortedYears,
+        weeks: weekLabels,
+        cellMap: map,
+        maxCount: highestCount,
+        anomalyPoints: anomalies,
+        highlightPoints: highlights,
+      };
+    }, [timeSeries, highlightedDateRange]);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -150,23 +164,23 @@ export const CalendarHeatmap: React.FC<CalendarHeatmapProps> = ({
           }
           const endDt = addSixDays(pt.date);
           const anomBadge = pt.is_anomaly
-            ? `<span style="color:#fb7185;font-weight:700;">⚠ ANOMALY (Z = +${pt.z_score.toFixed(
+            ? `<span style="color:#fb7185;font-weight:700;">⚠ Unusual Activity (Z-score: +${pt.z_score.toFixed(
                 2
               )})</span>`
-            : `<span style="color:#94a3b8;">Normal (Z = ${pt.z_score.toFixed(
+            : `<span style="color:#94a3b8;">Within Normal Range (Z-score: ${pt.z_score.toFixed(
                 2
               )})</span>`;
           return `
             <div style="min-width:190px">
               <div style="font-weight:700;color:#38bdf8;margin-bottom:4px;">
-                ${pt.date} → ${endDt} (W${String(wkNum).padStart(2, "0")})
+                ${pt.date} → ${endDt}
               </div>
               <div style="display:flex;justify-content:space-between;gap:12px;">
                 <span style="color:#cbd5e1;">Active Hotspots:</span>
                 <strong style="color:#fbbf24;">${pt.harmonized_count.toLocaleString()}</strong>
               </div>
               <div style="display:flex;justify-content:space-between;gap:12px;">
-                <span style="color:#cbd5e1;">Historical Mean:</span>
+                <span style="color:#cbd5e1;">Historical Average:</span>
                 <strong style="color:#e2e8f0;">${pt.historical_mean.toFixed(
                   1
                 )}</strong>
@@ -174,18 +188,15 @@ export const CalendarHeatmap: React.FC<CalendarHeatmapProps> = ({
               <div style="margin-top:4px;padding-top:4px;border-top:1px solid #1e293b;">
                 ${anomBadge}
               </div>
-              <div style="margin-top:3px;font-size:10px;color:#64748b;">
-                Click cell to filter map to this week
-              </div>
             </div>
           `;
         },
       },
       grid: {
-        top: 12,
-        left: 44,
-        right: 16,
-        bottom: 26,
+        top: 10,
+        left: 42,
+        right: 14,
+        bottom: 24,
       },
       xAxis: {
         type: "category",
@@ -268,7 +279,7 @@ export const CalendarHeatmap: React.FC<CalendarHeatmapProps> = ({
           },
         },
         {
-          name: "Z > 2 Anomaly",
+          name: "Anomaly",
           type: "scatter",
           coordinateSystem: "cartesian2d",
           symbolSize: 5,
@@ -277,6 +288,20 @@ export const CalendarHeatmap: React.FC<CalendarHeatmapProps> = ({
             color: "#ffffff",
             borderColor: "#e11d48",
             borderWidth: 1.5,
+          },
+          silent: true,
+        },
+        {
+          name: "Selected Window",
+          type: "scatter",
+          coordinateSystem: "cartesian2d",
+          symbol: "rect",
+          symbolSize: [9, 9],
+          data: highlightPoints,
+          itemStyle: {
+            color: "transparent",
+            borderColor: "#38bdf8",
+            borderWidth: 1.8,
           },
           silent: true,
         },
@@ -295,11 +320,7 @@ export const CalendarHeatmap: React.FC<CalendarHeatmapProps> = ({
       const pt = cellMap.get(`${yrNum}-${wkNum}`) || null;
       if (!pt) return;
 
-      if (selectedWeekStart === pt.date) {
-        onSelectWeek(null, null, yrNum);
-      } else {
-        onSelectWeek(pt.date, addSixDays(pt.date), yrNum);
-      }
+      onJumpToDate(pt.date);
     });
   }, [
     years,
@@ -307,9 +328,9 @@ export const CalendarHeatmap: React.FC<CalendarHeatmapProps> = ({
     cellMap,
     maxCount,
     anomalyPoints,
+    highlightPoints,
     colorMetric,
-    selectedWeekStart,
-    onSelectWeek,
+    onJumpToDate,
     sensorMode,
   ]);
 
@@ -320,56 +341,62 @@ export const CalendarHeatmap: React.FC<CalendarHeatmapProps> = ({
         <div className="flex items-center gap-2">
           <Calendar className="w-4 h-4 text-amber-400" />
           <div>
-            <h2 className="text-sm font-semibold text-slate-100 leading-tight">
-              Multi-Decade Burning Activity Calendar Matrix
-            </h2>
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-sm font-semibold text-slate-100 leading-tight">
+                Burning Activity Calendar
+              </h2>
+              <InfoTooltip
+                position="bottom"
+                align="left"
+                content="Each row is a year and each column is a week of the year. Brighter squares indicate higher burning activity. White dots mark weeks with unusually severe fire activity (Z-score > 2.0)."
+              />
+            </div>
             <p className="text-[11px] text-slate-400">
-              Click any week cell to filter the spatial H3 grid · White dots mark{" "}
-              <span className="text-rose-400 font-medium">
-                Z-Score &gt; 2.0 anomalies ({anomalyPoints.length} weeks)
-              </span>
+              Click on any week cell to jump timeline
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          {selectedWeekStart && (
-            <button
-              type="button"
-              onClick={() => onSelectWeek(null, null)}
-              className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-rose-500/20 text-rose-300 border border-rose-500/40 hover:bg-rose-500/30 transition-colors"
-            >
-              <RotateCcw className="w-3 h-3" />
-              <span>Week: {selectedWeekStart}</span>
-            </button>
-          )}
-
           {/* Color Metric Switch */}
           <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 text-xs">
-            <button
-              type="button"
-              onClick={() => setColorMetric("count")}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md font-medium transition-colors ${
-                colorMetric === "count"
-                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
+            <Tooltip
+              position="bottom"
+              align="right"
+              content="Colors each week by the total number of active fire hotspots detected."
             >
-              <Flame className="w-3 h-3" />
-              <span>Fire Count</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setColorMetric("zscore")}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md font-medium transition-colors ${
-                colorMetric === "zscore"
-                  ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
+              <button
+                type="button"
+                onClick={() => setColorMetric("count")}
+                className={`flex items-center gap-1 px-2 py-1 rounded-md font-medium transition-colors ${
+                  colorMetric === "count"
+                    ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Flame className="w-3 h-3" />
+                <span>Fire Count</span>
+              </button>
+            </Tooltip>
+
+            <Tooltip
+              position="bottom"
+              align="right"
+              content="Measures how unusual the fire activity is compared to the historical average for that same week of the year. A statistical Z-score > 2.0 (more than 2 standard deviations above normal) flags an extreme anomaly."
             >
-              <Sparkles className="w-3 h-3" />
-              <span>Z-Score Anomaly</span>
-            </button>
+              <button
+                type="button"
+                onClick={() => setColorMetric("zscore")}
+                className={`flex items-center gap-1 px-2 py-1 rounded-md font-medium transition-colors ${
+                  colorMetric === "zscore"
+                    ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Sparkles className="w-3 h-3" />
+                <span>Anomaly Score</span>
+              </button>
+            </Tooltip>
           </div>
         </div>
       </div>
@@ -382,16 +409,22 @@ export const CalendarHeatmap: React.FC<CalendarHeatmapProps> = ({
       {/* Footer Legend */}
       <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
         <div>
-          Critical Fire Season Window:{" "}
+          Critical Fire Season:{" "}
           <span className="text-amber-300 font-semibold font-mono">
             {summary.critical_season_start} to {summary.critical_season_end}
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-white border border-rose-500" />
-            Anomaly (Z &gt; 2.0)
-          </span>
+          <Tooltip
+            position="top"
+            align="right"
+            content="Weeks where fire activity exceeded the historical average by more than 2 standard deviations (Z-score > 2.0)."
+          >
+            <span className="flex items-center gap-1 cursor-help">
+              <span className="inline-block w-2 h-2 rounded-full bg-white border border-rose-500" />
+              Unusual Activity
+            </span>
+          </Tooltip>
           <div className="flex items-center gap-1">
             <span>Low</span>
             <span className="w-3 h-2 rounded-sm bg-slate-800 inline-block" />

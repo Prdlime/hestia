@@ -1,5 +1,13 @@
 export type SensorMode = "harmonized" | "modis" | "viirs";
 
+export type Timescale =
+  | "daily"
+  | "weekly"
+  | "monthly"
+  | "yearly"
+  | "5y"
+  | "10y";
+
 export interface GeoJSONPolygon {
   type: "Polygon";
   coordinates: number[][][];
@@ -10,6 +18,10 @@ export interface AOIQueryPayload {
   date_start: string;
   date_end: string;
   sensor_mode: SensorMode;
+}
+
+export interface AOITrendPayload extends AOIQueryPayload {
+  granularity: Timescale;
 }
 
 export interface SpatialHexDatum {
@@ -40,6 +52,22 @@ export interface CalendarSeriesResponse {
   status: string;
   summary: CalendarSummary;
   time_series: CalendarTimeSeriesPoint[];
+}
+
+export interface TrendPoint {
+  slice_start: string;
+  slice_end: string;
+  label: string;
+  count: number;
+  historical_mean: number;
+  z_score: number;
+  is_anomaly: boolean;
+}
+
+export interface TrendSeriesResponse {
+  status: string;
+  granularity: Timescale;
+  time_series: TrendPoint[];
 }
 
 export interface HealthMetadata {
