@@ -152,182 +152,25 @@ function createGlowSprite(): string {
   return canvas.toDataURL();
 }
 
-// Animated flame sprites: a strip of hand-drawn flame frames that loops, so each
-// fire can play it from its own starting frame.
-const FLAME_FRAME_COUNT = 10;
-const FLAME_FRAME_WIDTH = 96;
-const FLAME_FRAME_HEIGHT = 168;
-const FLAME_FRAMES_PER_SECOND = 11;
+// Pulsing heat rings (zoomed-in view): each fire sends out thin rings that
+// widen and fade, like ripples. Three rings per fire, evenly staggered.
+const HEAT_RINGS_PER_FIRE = 3;
+// With thousands of adjacent burning cells the rings would merge into noise,
+// so only the strongest fires pulse; every fire still gets its hot core dot.
+const MAX_PULSING_FIRES = 500;
 
-const FLAME_ICON_MAPPING: Record<
-  string,
-  {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    anchorY: number;
-    mask: boolean;
-  }
-> = {};
-for (let i = 0; i < FLAME_FRAME_COUNT; i++) {
-  FLAME_ICON_MAPPING[`flame-${i}`] = {
-    x: i * FLAME_FRAME_WIDTH,
-    y: 0,
-    width: FLAME_FRAME_WIDTH,
-    height: FLAME_FRAME_HEIGHT,
-    // Anchor near the bottom so the flame rises from the fire's location.
-    anchorY: FLAME_FRAME_HEIGHT - 14,
-    mask: false,
-  };
-}
-
-// One tongue of flame: a teardrop that leans by `sway` at the tip.
-function traceFlame(
-  ctx: CanvasRenderingContext2D,
-  cx: number,
-  base: number,
-  halfWidth: number,
-  height: number,
-  sway: number
-) {
-  ctx.beginPath();
-  ctx.moveTo(cx, base);
-  ctx.bezierCurveTo(
-    cx - halfWidth * 1.15,
-    base,
-    cx - halfWidth * 1.2,
-    base - height * 0.42,
-    cx - halfWidth * 0.32 + sway * 0.45,
-    base - height * 0.68
-  );
-  ctx.quadraticCurveTo(
-    cx - halfWidth * 0.05 + sway * 0.8,
-    base - height * 0.86,
-    cx + sway,
-    base - height
-  );
-  ctx.quadraticCurveTo(
-    cx + halfWidth * 0.3 + sway * 0.75,
-    base - height * 0.8,
-    cx + halfWidth * 0.5 + sway * 0.4,
-    base - height * 0.6
-  );
-  ctx.bezierCurveTo(
-    cx + halfWidth * 1.25,
-    base - height * 0.36,
-    cx + halfWidth * 1.1,
-    base,
-    cx,
-    base
-  );
-  ctx.closePath();
-}
-
-function createFlameAtlas(): string {
-  const canvas = document.createElement("canvas");
-  canvas.width = FLAME_FRAME_WIDTH * FLAME_FRAME_COUNT;
-  canvas.height = FLAME_FRAME_HEIGHT;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return "";
-
-  const base = FLAME_FRAME_HEIGHT - 14;
-  const fullHeight = FLAME_FRAME_HEIGHT - 30;
-
-  for (let i = 0; i < FLAME_FRAME_COUNT; i++) {
-    // Phase runs once around the loop, so the last frame flows into the first.
-    const t = (i / FLAME_FRAME_COUNT) * Math.PI * 2;
-    const cx = i * FLAME_FRAME_WIDTH + FLAME_FRAME_WIDTH / 2;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(i * FLAME_FRAME_WIDTH, 0, FLAME_FRAME_WIDTH, FLAME_FRAME_HEIGHT);
-    ctx.clip();
-
-    // Warm glow pooled at the base of the fire
-    const pool = ctx.createRadialGradient(cx, base - 6, 0, cx, base - 6, 44);
-    pool.addColorStop(0, "rgba(255,140,40,0.55)");
-    pool.addColorStop(0.5, "rgba(255,80,20,0.18)");
-    pool.addColorStop(1, "rgba(255,60,10,0)");
-    ctx.fillStyle = pool;
-    ctx.fillRect(i * FLAME_FRAME_WIDTH, base - 50, FLAME_FRAME_WIDTH, 64);
-
-    // Three nested tongues: deep red-orange outside, orange, then yellow-white
-    const tongues = [
-      {
-        width: 30,
-        height: fullHeight * (0.9 + 0.1 * Math.sin(t)),
-        sway: 9 * Math.sin(t + 0.4) + 4 * Math.sin(2 * t),
-        blur: 5,
-        stops: [
-          [0, "rgba(255,120,30,0.85)"],
-          [0.45, "rgba(240,60,15,0.7)"],
-          [0.85, "rgba(190,25,5,0.25)"],
-          [1, "rgba(150,15,0,0)"],
-        ],
-      },
-      {
-        width: 20,
-        height: fullHeight * (0.66 + 0.08 * Math.sin(t + 1.9)),
-        sway: 6 * Math.sin(t + 1.3) + 3 * Math.sin(2 * t + 0.7),
-        blur: 3.5,
-        stops: [
-          [0, "rgba(255,200,70,0.95)"],
-          [0.5, "rgba(255,150,35,0.85)"],
-          [0.9, "rgba(255,95,20,0.3)"],
-          [1, "rgba(255,80,10,0)"],
-        ],
-      },
-      {
-        width: 11,
-        height: fullHeight * (0.4 + 0.06 * Math.sin(t + 3.1)),
-        sway: 3.5 * Math.sin(t + 2.2),
-        blur: 2.5,
-        stops: [
-          [0, "rgba(255,252,235,1)"],
-          [0.5, "rgba(255,238,160,0.95)"],
-          [0.9, "rgba(255,205,90,0.4)"],
-          [1, "rgba(255,190,70,0)"],
-        ],
-      },
-    ] as const;
-
-    for (const tongue of tongues) {
-      const gradient = ctx.createLinearGradient(
-        0,
-        base,
-        0,
-        base - tongue.height
-      );
-      for (const [offset, color] of tongue.stops) {
-        gradient.addColorStop(offset, color);
-      }
-      ctx.fillStyle = gradient;
-      ctx.filter = `blur(${tongue.blur}px)`;
-      traceFlame(ctx, cx, base, tongue.width, tongue.height, tongue.sway);
-      ctx.fill();
-    }
-
-    // A small side lick that leans the other way, so the outline is not symmetric
-    ctx.filter = "blur(3px)";
-    const lick = ctx.createLinearGradient(0, base, 0, base - fullHeight * 0.5);
-    lick.addColorStop(0, "rgba(255,150,40,0.8)");
-    lick.addColorStop(1, "rgba(230,50,10,0)");
-    ctx.fillStyle = lick;
-    traceFlame(
-      ctx,
-      cx + 13 * Math.cos(t + 0.8),
-      base,
-      9,
-      fullHeight * (0.42 + 0.1 * Math.cos(t * 2 + 1)),
-      -7 * Math.sin(t + 0.9)
-    );
-    ctx.fill();
-
-    ctx.restore();
-  }
-  return canvas.toDataURL();
-}
+// Additive light for the rings. Unlike the glow sprites these lie on the
+// surface, so the globe's back-face culling must stay on to hide the far side.
+const HEAT_RING_PARAMETERS = {
+  depthWriteEnabled: false,
+  blend: true,
+  blendColorOperation: "add",
+  blendColorSrcFactor: "src-alpha",
+  blendColorDstFactor: "one",
+  blendAlphaOperation: "add",
+  blendAlphaSrcFactor: "one",
+  blendAlphaDstFactor: "one-minus-src-alpha",
+} as const;
 
 // Light adds up where glows overlap, the way real firelight does.
 const ADDITIVE_GLOW_PARAMETERS = {
@@ -414,7 +257,6 @@ export const MapView: React.FC<MapViewProps> = ({
   // Bumped whenever the camera settles, so far-side glow hiding stays current.
   const [viewTick, setViewTick] = useState<number>(0);
   const glowSprite = useMemo(() => createGlowSprite(), []);
-  const flameAtlas = useMemo(() => createFlameAtlas(), []);
 
   const drawModeRef = useRef<DrawMode>(drawMode);
   drawModeRef.current = drawMode;
@@ -766,40 +608,67 @@ export const MapView: React.FC<MapViewProps> = ({
     return () => cancelAnimationFrame(frame);
   }, [fireAnimationActive]);
 
-  // One flame per fire hexagon, positioned at the hexagon's centre.
-  const flamePoints = useMemo(
+  // One pulse source per fire hexagon, at the hexagon's centre, strongest first.
+  const heatPoints = useMemo(
     () =>
-      hexData.flatMap((d) => {
-        try {
-          const [lat, lon] = h3.cellToLatLng(d.h3_index);
-          return [
-            {
-              id: d.h3_index,
-              position: [lon, lat] as [number, number],
-              total_fires: d.total_fires,
-              phase: flickerPhase(d.h3_index),
-            },
-          ];
-        } catch {
-          return [];
-        }
-      }),
+      hexData
+        .flatMap((d) => {
+          try {
+            const [lat, lon] = h3.cellToLatLng(d.h3_index);
+            return [
+              {
+                id: d.h3_index,
+                position: [lon, lat] as [number, number],
+                total_fires: d.total_fires,
+                // 0..1 offset so neighbouring fires do not pulse in step
+                phase: flickerPhase(d.h3_index) / 6.283,
+              },
+            ];
+          } catch {
+            return [];
+          }
+        })
+        .sort((x, y) => y.total_fires - x.total_fires),
     [hexData]
   );
 
-  // On the globe, leave out flames hidden behind the planet (re-checked whenever
-  // the camera settles), since camera-facing sprites would otherwise show through.
-  const visibleFlamePoints = useMemo(() => {
+  // Only fires inside the current view pulse, re-checked whenever the camera
+  // settles. The map holds the whole world's fires, so without this the
+  // strongest 500 on Earth would take every ring and a zoomed-in region
+  // would get none.
+  const heatPointsInView = useMemo(() => {
     const map = mapRef.current;
-    if (projection !== "globe" || !map) return flamePoints;
-    return flamePoints.filter(
-      (d) =>
-        !map.transform.isLocationOccluded(
-          new maplibregl.LngLat(d.position[0], d.position[1])
-        )
-    );
+    if (!map) return heatPoints;
+    const bounds = map.getBounds();
+    const west = bounds.getWest();
+    const east = bounds.getEast();
+    const south = bounds.getSouth();
+    const north = bounds.getNorth();
+    const spansAntimeridian = west > east;
+    return heatPoints.filter(({ position: [lon, lat] }) => {
+      if (lat < south || lat > north) return false;
+      return spansAntimeridian
+        ? lon >= west || lon <= east
+        : lon >= west && lon <= east;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flamePoints, projection, viewTick]);
+  }, [heatPoints, viewTick]);
+
+  // Ring size and speed are judged against the strongest fire in view, so a
+  // quiet region still shows which of its own fires are the bigger ones.
+  const maxFiresInView = Math.max(1, heatPointsInView[0]?.total_fires ?? 1);
+
+  // The rings themselves: each pulsing fire repeated once per staggered ring.
+  const heatRings = useMemo(
+    () =>
+      heatPointsInView.slice(0, MAX_PULSING_FIRES).flatMap((d) =>
+        Array.from({ length: HEAT_RINGS_PER_FIRE }, (_, ring) => ({
+          ...d,
+          ringOffset: ring / HEAT_RINGS_PER_FIRE,
+        }))
+      ),
+    [heatPointsInView]
+  );
 
   const draftPolygonCoords = useMemo(() => {
     if (drawMode === "bbox" && draftVertices.length === 1 && cursorLonLat) {
@@ -1011,7 +880,7 @@ export const MapView: React.FC<MapViewProps> = ({
 
     if (hexOpacity > 0.05) {
       // Flat footprint of each burning hexagon. In 3D View it sits under the
-      // flames as a dim scorched patch; in 2D View it is the full-strength map.
+      // heat rings as a dim scorched patch; in 2D View it is the full-strength map.
       const h3Layer = new H3HexagonLayer<SpatialHexDatum>({
         id: "h3-fire-hexagons",
         data: hexData,
@@ -1046,36 +915,63 @@ export const MapView: React.FC<MapViewProps> = ({
       layers.push(h3Layer);
     }
 
-    // 3. Animated flames rising from each burning hexagon (3D View, zoomed in).
-    //    They replace the old extruded columns; taller flames = more fire activity.
-    const flameOpacity = Math.min(1, Math.max(0, currentZoom - 5.8));
-    if (extruded3D && flameOpacity > 0.05 && visibleFlamePoints.length > 0) {
+    // 3. Pulsing heat rings spreading from each burning hexagon (3D View,
+    //    zoomed in). Stronger fires send wider, faster rings in a hotter colour.
+    const heatOpacity = Math.min(1, Math.max(0, currentZoom - 5.8));
+    if (extruded3D && heatOpacity > 0.05 && heatPointsInView.length > 0) {
       const zoomScale = Math.min(1.7, Math.max(0.75, 0.75 + (currentZoom - 6.2) * 0.2));
-      const frameClock = flickerTime * FLAME_FRAMES_PER_SECOND;
+      type HeatPoint = (typeof heatPointsInView)[number];
+      type HeatRing = (typeof heatRings)[number];
+      const strength = (d: { total_fires: number }) =>
+        Math.min(1, Math.sqrt(d.total_fires / maxFiresInView));
+      // 0 → ring just leaving the fire, 1 → fully spread and faded out.
+      const ringProgress = (d: HeatRing) => {
+        const period = 2.8 - 1.1 * strength(d); // seconds per pulse
+        return (flickerTime / period + d.phase + d.ringOffset) % 1;
+      };
 
       layers.push(
-        new IconLayer({
-          id: "fire-flames",
-          data: visibleFlamePoints,
+        new ScatterplotLayer<HeatRing>({
+          id: "fire-heat-rings",
+          data: heatRings,
           pickable: false,
-          iconAtlas: flameAtlas,
-          iconMapping: FLAME_ICON_MAPPING,
-          getIcon: (d: { phase: number }) =>
-            `flame-${
-              Math.floor(frameClock + d.phase * 7) % FLAME_FRAME_COUNT
-            }`,
-          getPosition: (d: { position: [number, number] }) => d.position,
-          sizeUnits: "pixels",
-          getSize: (d: { total_fires: number; phase: number }) =>
-            (38 + Math.sqrt(d.total_fires / maxFires) * 74) *
-            zoomScale *
-            flickerFactor(flickerTime, d.phase),
-          getColor: [255, 255, 255, Math.round(255 * flameOpacity)],
-          parameters: ADDITIVE_GLOW_PARAMETERS,
+          filled: false,
+          stroked: true,
+          radiusUnits: "pixels",
+          lineWidthUnits: "pixels",
+          getPosition: (d) => d.position,
+          getRadius: (d) =>
+            (4 + ringProgress(d) * (16 + strength(d) * 38)) * zoomScale,
+          getLineWidth: (d) => 2.2 - 1.2 * ringProgress(d),
+          getLineColor: (d) => {
+            const [r, g, b] = getFireColor(d.total_fires, maxFiresInView);
+            const fade = Math.pow(1 - ringProgress(d), 1.6);
+            return [r, g, b, Math.round(235 * fade * heatOpacity)];
+          },
+          parameters: HEAT_RING_PARAMETERS,
           updateTriggers: {
-            getIcon: [flickerTime],
-            getSize: [maxFires, zoomScale, flickerTime],
-            getColor: [flameOpacity],
+            getRadius: [maxFiresInView, zoomScale, flickerTime],
+            getLineWidth: [flickerTime],
+            getLineColor: [maxFires, maxFiresInView, sensorMode, heatOpacity, flickerTime],
+          },
+        })
+      );
+
+      // White-hot point marking each fire's exact position
+      layers.push(
+        new ScatterplotLayer<HeatPoint>({
+          id: "fire-heat-cores",
+          data: heatPointsInView,
+          pickable: false,
+          stroked: false,
+          radiusUnits: "pixels",
+          getPosition: (d) => d.position,
+          getRadius: (d) => (1.6 + strength(d) * 2.2) * zoomScale,
+          getFillColor: [255, 244, 214, Math.round(240 * heatOpacity)],
+          parameters: HEAT_RING_PARAMETERS,
+          updateTriggers: {
+            getRadius: [maxFiresInView, zoomScale],
+            getFillColor: [heatOpacity],
           },
         })
       );
@@ -1130,8 +1026,9 @@ export const MapView: React.FC<MapViewProps> = ({
     draftVertices,
     flickerTime,
     glowSprite,
-    flameAtlas,
-    visibleFlamePoints,
+    heatPointsInView,
+    maxFiresInView,
+    heatRings,
     projection,
     viewTick,
   ]);
@@ -1269,7 +1166,7 @@ export const MapView: React.FC<MapViewProps> = ({
               ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
               : "bg-slate-900/90 border-slate-700/80 text-slate-300 hover:text-white"
           }`}
-          title="Toggle the tilted 3D view with animated flames"
+          title="Toggle the tilted 3D view with pulsing heat rings"
         >
           <Box className="w-3.5 h-3.5" />
           <span>{extruded3D ? "3D View" : "2D View"}</span>
