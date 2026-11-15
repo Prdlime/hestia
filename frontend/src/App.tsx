@@ -22,6 +22,7 @@ import {
   fetchTrendSeries,
 } from "./api/client";
 import { CalendarHeatmap } from "./components/CalendarHeatmap";
+import { MALAYSIA_PRESET_AOIS } from "./constants/presets";
 import { ClimatologyChart } from "./components/ClimatologyChart";
 import { MapView } from "./components/MapView";
 import { InfoTooltip, Tooltip } from "./components/Tooltip";
@@ -58,11 +59,20 @@ const WORLD_AOI: GeoJSONPolygon = {
   ],
 };
 
+// The region the statistics and charts describe when the page first loads.
+// The map itself always draws the whole world, so the globe stays populated
+// while the numbers stay meaningful for somewhere in particular.
+const DEFAULT_ANALYSIS_AOI: GeoJSONPolygon =
+  MALAYSIA_PRESET_AOIS[0]?.polygon ?? WORLD_AOI;
+
 type PlaybackSpeed = 1 | 2 | 4;
 
 export const App: React.FC = () => {
-  const [aoi, setAoi] = useState<GeoJSONPolygon>(WORLD_AOI);
-  const [hasCustomAoi, setHasCustomAoi] = useState<boolean>(false);
+  const [aoi, setAoi] = useState<GeoJSONPolygon>(DEFAULT_ANALYSIS_AOI);
+  const [hasCustomAoi, setHasCustomAoi] = useState<boolean>(true);
+  // Fire density for the whole planet, shown on the map regardless of which
+  // region is selected for analysis.
+  const [regionHexData, setRegionHexData] = useState<SpatialHexDatum[]>([]);
 
   const [dataBounds, setDataBounds] = useState<{ min: string; max: string }>({
     min: "2005-01-01",
@@ -287,13 +297,13 @@ export const App: React.FC = () => {
       sliceEnd: string,
       signal: AbortSignal
     ): Promise<SpatialHexDatum[]> => {
-      const cacheKey = `${aoiKey}|${sensorMode}|${sliceStart}|${sliceEnd}`;
+      const cacheKey = `world|${sensorMode}|${sliceStart}|${sliceEnd}`;
       const hit = spatialCacheRef.current.get(cacheKey);
       if (hit) return hit;
 
       const res = await fetchSpatialSummary(
         {
-          aoi,
+          aoi: WORLD_AOI,
           date_start: sliceStart,
           date_end: sliceEnd,
           sensor_mode: sensorMode,
@@ -310,7 +320,7 @@ export const App: React.FC = () => {
       spatialCacheRef.current.set(cacheKey, res.data);
       return res.data;
     },
-    [aoi, aoiKey, sensorMode]
+    [sensorMode]
   );
 
   // Spatial map summary + coordinated playback timer with next-frame prefetch
@@ -321,7 +331,7 @@ export const App: React.FC = () => {
     let cancelled = false;
 
     const run = async () => {
-      const cacheKey = `${aoiKey}|${sensorMode}|${activeSlice.start}|${activeSlice.end}`;
+      const cacheKey = `world|${sensorMode}|${activeSlice.start}|${activeSlice.end}`;
       const cached = spatialCacheRef.current.get(cacheKey);
       if (cached) {
         setHexData(cached);
@@ -460,8 +470,8 @@ export const App: React.FC = () => {
   }, []);
 
   const handleResetAoi = useCallback(() => {
-    setAoi(WORLD_AOI);
-    setHasCustomAoi(false);
+    setAoi(DEFAULT_ANALYSIS_AOI);
+    setHasCustomAoi(true);
   }, []);
 
   // Highlight active viewing slice on the Burning Activity Calendar
@@ -470,10 +480,39 @@ export const App: React.FC = () => {
     [activeSlice.start, activeSlice.end]
   );
 
+  // Fire activity within the selected region for the active slice. The map
+  // shows the world, so the headline figures need their own query.
+  useEffect(() => {
+    if (!metadataReady) return;
+    const controller = new AbortController();
+    let cancelled = false;
+
+    fetchSpatialSummary(
+      {
+        aoi,
+        date_start: activeSlice.start,
+        date_end: activeSlice.end,
+        sensor_mode: sensorMode,
+      },
+      controller.signal
+    )
+      .then((res) => {
+        if (!cancelled) setRegionHexData(res.data);
+      })
+      .catch(() => {
+        if (!cancelled) setRegionHexData([]);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [metadataReady, aoiKey, aoi, sensorMode, activeSlice.start, activeSlice.end]);
+
   // Compute top-level KPI metrics for the active viewing slice & loop range anomalies
   const kpiStats = useMemo(() => {
-    const totalFires = hexData.reduce((acc, h) => acc + h.total_fires, 0);
-    const weightedFrp = hexData.reduce(
+    const totalFires = regionHexData.reduce((acc, h) => acc + h.total_fires, 0);
+    const weightedFrp = regionHexData.reduce(
       (acc, h) => acc + h.mean_frp * h.total_fires,
       0
     );
@@ -492,12 +531,12 @@ export const App: React.FC = () => {
 
     return {
       totalFires,
-      activeZoneCount: hexData.length,
+      activeZoneCount: regionHexData.length,
       avgFrp,
       anomalyWeeks,
       peakAnomaly,
     };
-  }, [hexData, calendarSeries, boundsStart, boundsEnd]);
+  }, [regionHexData, calendarSeries, boundsStart, boundsEnd]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100">
