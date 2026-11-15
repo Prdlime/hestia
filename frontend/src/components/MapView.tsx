@@ -714,7 +714,14 @@ export const MapView: React.FC<MapViewProps> = ({
   ]);
 
   return (
-    <div className="relative w-full h-full rounded-xl overflow-hidden border border-slate-800 bg-slate-900 shadow-2xl">
+    <div
+      className={`relative w-full h-full rounded-xl overflow-hidden ${
+        projection === "globe"
+          ? // Globe floats directly on the page: no panel behind it.
+            "bg-transparent"
+          : "border border-slate-800 bg-slate-900 shadow-2xl"
+      }`}
+    >
       <div
         ref={mapContainerRef}
         className={`w-full h-full ${
