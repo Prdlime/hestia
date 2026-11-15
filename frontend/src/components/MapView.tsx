@@ -242,6 +242,8 @@ export const MapView: React.FC<MapViewProps> = ({
       pitch: 36,
       bearing: 0,
       attributionControl: false,
+      // Show a single world: no repeated copies when zoomed out on a wide map.
+      renderWorldCopies: false,
     });
 
     map.addControl(
