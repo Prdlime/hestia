@@ -76,14 +76,26 @@ const INTRO_ZOOM = 1.4;
 // Apply the chosen projection (and a soft atmosphere halo for the globe).
 // MapLibre resets both whenever a new style is loaded, so this runs on every
 // "style.load" as well as when the user flips the Globe / Flat switch.
-function applyProjection(map: maplibregl.Map, projection: MapProjection) {
-  map.setProjection({ type: projection === "globe" ? "globe" : "mercator" });
-  map.setSky({
+function projectionSpec(
+  projection: MapProjection
+): NonNullable<StyleSpecification["projection"]> {
+  return { type: projection === "globe" ? "globe" : "mercator" };
+}
+
+function skySpec(
+  projection: MapProjection
+): NonNullable<StyleSpecification["sky"]> {
+  return {
     "atmosphere-blend":
       projection === "globe"
         ? ["interpolate", ["linear"], ["zoom"], 0, 0.8, 4.5, 0.6, 6.5, 0]
         : 0,
-  });
+  };
+}
+
+function applyProjection(map: maplibregl.Map, projection: MapProjection) {
+  map.setProjection(projectionSpec(projection));
+  map.setSky(skySpec(projection));
 }
 
 interface FireBeaconCluster {
@@ -404,8 +416,18 @@ export const MapView: React.FC<MapViewProps> = ({
   const handleToggleBasemap = (target: "dark" | "satellite") => {
     setBasemap(target);
     if (!mapRef.current) return;
+    // Carry the current projection into the new style, so the map never drops
+    // back to a flat map (and shifts the camera) while the basemap is swapping.
+    const current = projectionRef.current;
     mapRef.current.setStyle(
-      target === "dark" ? DARK_MATTER_STYLE : SATELLITE_STYLE
+      target === "dark" ? DARK_MATTER_STYLE : SATELLITE_STYLE,
+      {
+        transformStyle: (_previous, next) => ({
+          ...next,
+          projection: projectionSpec(current),
+          sky: skySpec(current),
+        }),
+      }
     );
   };
 
