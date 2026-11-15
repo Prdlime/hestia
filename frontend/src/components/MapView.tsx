@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { StyleSpecification } from "maplibre-gl";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import { H3HexagonLayer } from "@deck.gl/geo-layers";
-import { PolygonLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { IconLayer, PolygonLayer, ScatterplotLayer } from "@deck.gl/layers";
 import * as h3 from "h3-js";
 import {
   Box,
@@ -118,6 +118,68 @@ interface MapViewProps {
   loading: boolean;
 }
 
+// Soft round "ember" sprite: opaque at the centre, fading smoothly to nothing.
+// Drawn once on a canvas and tinted per fire by the IconLayer (mask: true).
+const GLOW_SPRITE_SIZE = 128;
+const GLOW_ICON_MAPPING = {
+  glow: {
+    x: 0,
+    y: 0,
+    width: GLOW_SPRITE_SIZE,
+    height: GLOW_SPRITE_SIZE,
+    mask: true,
+  },
+};
+
+function createGlowSprite(): string {
+  const canvas = document.createElement("canvas");
+  canvas.width = GLOW_SPRITE_SIZE;
+  canvas.height = GLOW_SPRITE_SIZE;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  const r = GLOW_SPRITE_SIZE / 2;
+  const gradient = ctx.createRadialGradient(r, r, 0, r, r, r);
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.12, "rgba(255,255,255,0.85)");
+  gradient.addColorStop(0.3, "rgba(255,255,255,0.42)");
+  gradient.addColorStop(0.55, "rgba(255,255,255,0.14)");
+  gradient.addColorStop(0.8, "rgba(255,255,255,0.03)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, GLOW_SPRITE_SIZE, GLOW_SPRITE_SIZE);
+  return canvas.toDataURL();
+}
+
+// Light adds up where glows overlap, the way real firelight does.
+const ADDITIVE_GLOW_PARAMETERS = {
+  depthWriteEnabled: false,
+  blend: true,
+  blendColorOperation: "add",
+  blendColorSrcFactor: "src-alpha",
+  blendColorDstFactor: "one",
+  blendAlphaOperation: "add",
+  blendAlphaSrcFactor: "one",
+  blendAlphaDstFactor: "one-minus-src-alpha",
+} as const;
+
+// Stable 0..2π phase per fire so each one flickers on its own rhythm.
+function flickerPhase(id: string): number {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  }
+  return ((hash >>> 0) % 6283) / 1000;
+}
+
+// Gentle, irregular breathing of a flame: two sine waves out of step.
+function flickerFactor(timeSec: number, phase: number): number {
+  return (
+    1 +
+    0.1 * Math.sin(timeSec * 2.3 + phase) +
+    0.06 * Math.sin(timeSec * 5.9 + phase * 1.7)
+  );
+}
+
 function getFireColor(
   fires: number,
   maxFires: number
@@ -164,6 +226,10 @@ export const MapView: React.FC<MapViewProps> = ({
     x: number;
     y: number;
   } | null>(null);
+
+  // Clock (seconds) that drives the ember flicker; stays 0 when motion is reduced.
+  const [flickerTime, setFlickerTime] = useState<number>(0);
+  const glowSprite = useMemo(() => createGlowSprite(), []);
 
   const drawModeRef = useRef<DrawMode>(drawMode);
   drawModeRef.current = drawMode;
@@ -492,6 +558,25 @@ export const MapView: React.FC<MapViewProps> = ({
     }
   }, [drawMode]);
 
+  // Animate the ember flicker (~16 fps) only while the glowing points are on screen.
+  const emberPointsVisible = currentZoom < 6.8 && hexData.length > 0;
+  useEffect(() => {
+    if (!emberPointsVisible) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+
+    let frame = 0;
+    let lastUpdate = 0;
+    const tick = (now: number) => {
+      if (now - lastUpdate >= 60) {
+        lastUpdate = now;
+        setFlickerTime(now / 1000);
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [emberPointsVisible]);
+
   const draftPolygonCoords = useMemo(() => {
     if (drawMode === "bbox" && draftVertices.length === 1 && cursorLonLat) {
       const [lon1, lat1] = draftVertices[0];
@@ -550,42 +635,87 @@ export const MapView: React.FC<MapViewProps> = ({
           ? 1.0
           : Math.max(0.15, (6.8 - currentZoom) / 1.6);
 
-      // Adaptive sizing: compact, refined pinpoint radii at continental scale
+      // Adaptive sizing: compact, refined pinpoint sizes at continental scale
       const isContinental = currentZoom < 4.2;
-      const auraMin = isContinental ? 3.5 : 5.0;
-      const auraMax = isContinental ? 9.5 : 15.0;
-      const coreMin = isContinental ? 2.0 : 2.8;
-      const coreMax = isContinental ? 5.0 : 7.0;
+      const haloMin = isContinental ? 16 : 26;
+      const haloMax = isContinental ? 40 : 72;
+      const flameMin = isContinental ? 8 : 12;
+      const flameMax = isContinental ? 18 : 30;
+      const coreMin = isContinental ? 1.2 : 1.6;
+      const coreMax = isContinental ? 2.6 : 3.8;
 
-      // Pass A: Soft diffuse thermal aura (non-stroked, eliminates overlapping rings)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const intensity = (d: any) => Math.sqrt(d.total_fires / maxClusterFires);
+
+      // Pass A: Wide, faint heat halo in the fire's intensity colour
       layers.push(
-        new ScatterplotLayer({
-          id: "fire-cluster-aura",
+        new IconLayer({
+          id: "fire-cluster-halo",
           data: clusteredBeacons,
           pickable: false,
+          iconAtlas: glowSprite,
+          iconMapping: GLOW_ICON_MAPPING,
+          getIcon: () => "glow",
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           getPosition: (d: any) => d.position,
+          sizeUnits: "pixels",
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          getRadius: (d: any) =>
-            auraMin +
-            Math.sqrt(d.total_fires / maxClusterFires) * (auraMax - auraMin),
-          radiusUnits: "pixels",
-          radiusMinPixels: auraMin,
-          radiusMaxPixels: auraMax,
+          getSize: (d: any) =>
+            (haloMin + intensity(d) * (haloMax - haloMin)) *
+            flickerFactor(flickerTime * 0.6, flickerPhase(d.id) + 1.3),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          getFillColor: (d: any) => {
+          getColor: (d: any) => {
             const [r, g, b] = getFireColor(d.total_fires, maxClusterFires);
-            return [r, g, b, Math.round(45 * beaconOpacity)];
+            return [r, g, b, Math.round(150 * beaconOpacity)];
           },
-          stroked: false,
+          parameters: ADDITIVE_GLOW_PARAMETERS,
           updateTriggers: {
-            getFillColor: [maxClusterFires, sensorMode, beaconOpacity],
-            getRadius: [maxClusterFires, currentZoom],
+            getColor: [maxClusterFires, sensorMode, beaconOpacity],
+            getSize: [maxClusterFires, isContinental, flickerTime],
           },
         })
       );
 
-      // Pass B: High-intensity central core with 1-click zoom
+      // Pass B: Brighter, tighter flame body that flickers
+      layers.push(
+        new IconLayer({
+          id: "fire-cluster-flame",
+          data: clusteredBeacons,
+          pickable: false,
+          iconAtlas: glowSprite,
+          iconMapping: GLOW_ICON_MAPPING,
+          getIcon: () => "glow",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          getPosition: (d: any) => d.position,
+          sizeUnits: "pixels",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          getSize: (d: any) =>
+            (flameMin + intensity(d) * (flameMax - flameMin)) *
+            flickerFactor(flickerTime, flickerPhase(d.id)),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          getColor: (d: any) => {
+            // Pull the intensity colour toward hot orange-yellow, like a flame body
+            const [r, g, b] = getFireColor(d.total_fires, maxClusterFires);
+            return [
+              Math.round((r + 255) / 2),
+              Math.round((g + 170) / 2),
+              Math.round((b + 60) / 2),
+              Math.round(
+                235 *
+                  beaconOpacity *
+                  Math.min(1, flickerFactor(flickerTime, flickerPhase(d.id)))
+              ),
+            ];
+          },
+          parameters: ADDITIVE_GLOW_PARAMETERS,
+          updateTriggers: {
+            getColor: [maxClusterFires, sensorMode, beaconOpacity, flickerTime],
+            getSize: [maxClusterFires, isContinental, flickerTime],
+          },
+        })
+      );
+
+      // Pass C: White-hot core; also the click / hover target (1-click zoom)
       layers.push(
         new ScatterplotLayer({
           id: "fire-cluster-core",
@@ -601,15 +731,10 @@ export const MapView: React.FC<MapViewProps> = ({
           radiusMinPixels: coreMin,
           radiusMaxPixels: coreMax,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          getFillColor: (d: any) => {
-            const [r, g, b] = getFireColor(d.total_fires, maxClusterFires);
-            return [r, g, b, Math.round(230 * beaconOpacity)];
-          },
-          stroked: true,
-          getLineColor: [255, 255, 255, Math.round(75 * beaconOpacity)],
-          lineWidthMinPixels: 1,
+          getFillColor: [255, 244, 214, Math.round(240 * beaconOpacity)],
+          stroked: false,
           updateTriggers: {
-            getFillColor: [maxClusterFires, sensorMode, beaconOpacity],
+            getFillColor: [beaconOpacity],
             getRadius: [maxClusterFires, currentZoom],
           },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -733,6 +858,8 @@ export const MapView: React.FC<MapViewProps> = ({
     sensorMode,
     draftPolygonCoords,
     draftVertices,
+    flickerTime,
+    glowSprite,
   ]);
 
   return (
