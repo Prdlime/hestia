@@ -63,7 +63,13 @@ def get_data_dir() -> Path:
 # the fine ~1 km grid (resolution 8); everywhere else a ~7 km grid (resolution 6)
 # keeps a worldwide, multi-decade dataset small enough to ship with the backend.
 FINE_RESOLUTION = 8
-COARSE_RESOLUTION = 6
+COARSE_RESOLUTION = int(os.environ.get("HESTIA_COARSE_RESOLUTION", "5"))
+
+# Outside the study area, fires are bucketed into ISO weeks rather than days.
+# Nearly all detections fall outside it, so this is the single biggest saving;
+# the calendar and trend charts are weekly anyway, so only a day-level view of
+# a region outside Southeast Asia is affected.
+COARSE_WEEKLY = os.environ.get("HESTIA_COARSE_WEEKLY", "1") != "0"
 
 # (lon_min, lat_min, lon_max, lat_max)
 STUDY_AREA_BBOX = (92.0, -12.0, 142.0, 23.0)
@@ -294,6 +300,11 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
         else:
             countries = [None] * len(h3_cells)
 
+        in_study = [
+            _in_bbox(float(la), float(lo), STUDY_AREA_BBOX)
+            for la, lo in zip(lats, lons)
+        ]
+
         standardized = pl.DataFrame(
             {
                 "h3_index": h3_cells,
@@ -301,8 +312,18 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
                 "sensor": sensors,
                 "frp": frps,
                 "country": pl.Series(countries, dtype=pl.Utf8),
+                "in_study": pl.Series(in_study, dtype=pl.Boolean),
             }
         ).drop_nulls(["h3_index", "acq_date"])
+
+        if COARSE_WEEKLY:
+            # Snap out-of-area detections to the Monday of their ISO week.
+            standardized = standardized.with_columns(
+                pl.when(pl.col("in_study"))
+                .then(pl.col("acq_date"))
+                .otherwise(pl.col("acq_date").dt.truncate("1w"))
+                .alias("acq_date")
+            )
 
         frames.append(standardized)
 
@@ -313,7 +334,7 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
 
     modis_daily = (
         combined.filter(pl.col("sensor") == "modis")
-        .group_by(["h3_index", "acq_date"])
+        .group_by(["h3_index", "acq_date", "in_study"])
         .agg(
             pl.len().cast(pl.Int32).alias("modis_count"),
             pl.col("frp").mean().round(2).alias("modis_frp"),
@@ -322,7 +343,7 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
 
     viirs_daily = (
         combined.filter(pl.col("sensor") == "viirs")
-        .group_by(["h3_index", "acq_date"])
+        .group_by(["h3_index", "acq_date", "in_study"])
         .agg(
             pl.len().cast(pl.Int32).alias("viirs_count"),
             pl.col("frp").mean().round(2).alias("viirs_frp"),
@@ -330,7 +351,7 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
     )
 
     daily = modis_daily.join(
-        viirs_daily, on=["h3_index", "acq_date"], how="full", coalesce=True
+        viirs_daily, on=["h3_index", "acq_date", "in_study"], how="full", coalesce=True
     ).with_columns(
         pl.col("modis_count").fill_null(0).cast(pl.Int32),
         pl.col("modis_frp").fill_null(0.0).cast(pl.Float64),
@@ -398,7 +419,16 @@ def run_harmonization_pipeline(force: bool = False) -> Dict:
 
     # Step 2: Fit Overlap Calibration Factor (2012-present co-located observations)
     viirs_launch = date(2012, 1, 20)
-    overlap_df = daily_df.filter(
+    # Calibrate only where both sensors are on the same footing: the study
+    # area's fine daily grid. Mixing it with the coarse weekly buckets used
+    # elsewhere inflates the ratio, because a weekly bucket pairs a single
+    # MODIS detection with a whole week of VIIRS ones.
+    if "in_study" in daily_df.columns:
+        calibration_source = daily_df.filter(pl.col("in_study"))
+    else:
+        calibration_source = daily_df
+
+    overlap_df = calibration_source.filter(
         (pl.col("acq_date") >= viirs_launch)
         & (pl.col("modis_count") > 0)
         & (pl.col("viirs_count") > 0)
@@ -455,22 +485,22 @@ def run_harmonization_pipeline(force: bool = False) -> Dict:
                 .then(pl.col("viirs_frp"))
                 .otherwise((pl.col("modis_frp") * gamma_frp).round(2))
                 .alias("harmonized_frp"),
-                pl.col("acq_date").dt.iso_year().cast(pl.Int32).alias("iso_year"),
-                pl.col("acq_date")
-                .dt.week()
-                .cast(pl.Int32)
-                .clip(upper_bound=52)
-                .alias("iso_week"),
             ]
         )
+        # Compact storage: counts fit in 16 bits, FRP needs no more than one
+        # decimal, and sorting by cell lets zstd collapse the repeated H3 text.
+        # ISO year/week and week_start_date are dropped: every query derives
+        # them from acq_date instead. Together this roughly halves the file.
         .with_columns(
-            # Compute Monday start date of the (iso_year, iso_week) bucket
-            pl.col("acq_date")
-            .dt.truncate("1w")
-            .dt.to_string("%Y-%m-%d")
-            .alias("week_start_date")
+            pl.col("modis_count").cast(pl.UInt16),
+            pl.col("viirs_count").cast(pl.UInt16),
+            pl.col("harmonized_count").cast(pl.UInt16),
+            pl.col("modis_frp").round(1).cast(pl.Float32),
+            pl.col("viirs_frp").round(1).cast(pl.Float32),
+            pl.col("harmonized_frp").round(1).cast(pl.Float32),
         )
-        .sort(["acq_date", "h3_index"])
+        .drop("in_study", strict=False)
+        .sort(["h3_index", "acq_date"])
     )
 
     cells_df = pl.DataFrame(
@@ -495,6 +525,8 @@ def run_harmonization_pipeline(force: bool = False) -> Dict:
         "h3_resolution_fine": FINE_RESOLUTION,
         "h3_resolution_coarse": COARSE_RESOLUTION,
         "study_area_bbox": list(STUDY_AREA_BBOX),
+        "coarse_weekly_outside_study_area": COARSE_WEEKLY,
+        "calibration_scope": "study_area_fine_daily_grid",
         "calibration_alpha_count": alpha_count,
         "calibration_gamma_frp": gamma_frp,
         "overlap_sample_size": int(overlap_df.height),
