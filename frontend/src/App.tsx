@@ -18,6 +18,7 @@ import {
 import {
   fetchCalendarSeries,
   fetchHealthMetadata,
+  fetchKpiSummary,
   fetchSpatialSummary,
   fetchTrendSeries,
 } from "./api/client";
@@ -79,9 +80,16 @@ export const App: React.FC = () => {
   // False until the user draws something: the default region feeds the
   // headline figures, but nothing is outlined on a map nobody has touched.
   const [hasCustomAoi, setHasCustomAoi] = useState<boolean>(false);
-  // Fire density for the whole planet, shown on the map regardless of which
-  // region is selected for analysis.
-  const [regionHexData, setRegionHexData] = useState<SpatialHexDatum[]>([]);
+  // Aggregated KPI figures for the selected analysis AOI & slice.
+  const [regionKpis, setRegionKpis] = useState<{
+    totalFires: number;
+    activeZoneCount: number;
+    avgFrp: number;
+  }>({
+    totalFires: 0,
+    activeZoneCount: 0,
+    avgFrp: 0,
+  });
   // True when the dataset stores the world outside the study area weekly.
   const [coarseWeekly, setCoarseWeekly] = useState<boolean>(false);
 
@@ -132,6 +140,39 @@ export const App: React.FC = () => {
   const [loadingCalendar, setLoadingCalendar] = useState<boolean>(false);
   const [loadingTrend, setLoadingTrend] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Zoom- and viewport-bucketed spatial resolution requested for map rendering
+  const [spatialView, setSpatialView] = useState<{
+    maxResolution: number;
+    viewportBbox: [number, number, number, number] | null;
+  }>({
+    maxResolution: 2,
+    viewportBbox: null,
+  });
+
+  const handleMapViewChange = useCallback(
+    (next: {
+      maxResolution: number;
+      viewportBbox: [number, number, number, number] | null;
+    }) => {
+      setSpatialView((prev) => {
+        if (
+          prev.maxResolution === next.maxResolution &&
+          ((prev.viewportBbox === null && next.viewportBbox === null) ||
+            (prev.viewportBbox !== null &&
+              next.viewportBbox !== null &&
+              prev.viewportBbox[0] === next.viewportBbox[0] &&
+              prev.viewportBbox[1] === next.viewportBbox[1] &&
+              prev.viewportBbox[2] === next.viewportBbox[2] &&
+              prev.viewportBbox[3] === next.viewportBbox[3]))
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    },
+    []
+  );
 
   // Bounded client-side frame cache for silky-smooth animated loop playback
   const spatialCacheRef = useRef<Map<string, SpatialHexDatum[]>>(new Map());
@@ -302,6 +343,16 @@ export const App: React.FC = () => {
     timescale,
   ]);
 
+  const mapAoi = hasCustomAoi ? aoi : WORLD_AOI;
+  const mapAoiKey = hasCustomAoi ? aoiKey : "world";
+  const mapMaxRes = hasCustomAoi
+    ? Math.max(spatialView.maxResolution, 4)
+    : spatialView.maxResolution;
+  const mapViewportBbox = spatialView.viewportBbox;
+  const mapViewKey = `${mapMaxRes}|${
+    mapViewportBbox ? mapViewportBbox.join(",") : "global"
+  }`;
+
   // Fetch helper with bounded client-side frame cache (up to 450 slices)
   const loadSpatialSlice = useCallback(
     async (
@@ -309,16 +360,18 @@ export const App: React.FC = () => {
       sliceEnd: string,
       signal: AbortSignal
     ): Promise<SpatialHexDatum[]> => {
-      const cacheKey = `world|${sensorMode}|${sliceStart}|${sliceEnd}`;
+      const cacheKey = `${mapAoiKey}|${mapViewKey}|${sensorMode}|${sliceStart}|${sliceEnd}`;
       const hit = spatialCacheRef.current.get(cacheKey);
       if (hit) return hit;
 
       const res = await fetchSpatialSummary(
         {
-          aoi: WORLD_AOI,
+          aoi: mapAoi,
           date_start: sliceStart,
           date_end: sliceEnd,
           sensor_mode: sensorMode,
+          max_resolution: mapMaxRes,
+          ...(mapViewportBbox ? { viewport_bbox: mapViewportBbox } : {}),
         },
         signal
       );
@@ -332,7 +385,7 @@ export const App: React.FC = () => {
       spatialCacheRef.current.set(cacheKey, res.data);
       return res.data;
     },
-    [sensorMode]
+    [mapAoi, mapAoiKey, mapMaxRes, mapViewportBbox, mapViewKey, sensorMode]
   );
 
   // Spatial map summary + coordinated playback timer with next-frame prefetch
@@ -343,7 +396,7 @@ export const App: React.FC = () => {
     let cancelled = false;
 
     const run = async () => {
-      const cacheKey = `world|${sensorMode}|${activeSlice.start}|${activeSlice.end}`;
+      const cacheKey = `${mapAoiKey}|${mapViewKey}|${sensorMode}|${activeSlice.start}|${activeSlice.end}`;
       const cached = spatialCacheRef.current.get(cacheKey);
       if (cached) {
         setHexData(cached);
@@ -429,6 +482,9 @@ export const App: React.FC = () => {
   }, [
     metadataReady,
     aoiKey,
+    hasCustomAoi,
+    mapAoiKey,
+    mapViewKey,
     sensorMode,
     activeSlice.start,
     activeSlice.end,
@@ -492,14 +548,14 @@ export const App: React.FC = () => {
     [activeSlice.start, activeSlice.end]
   );
 
-  // Fire activity within the selected region for the active slice. The map
-  // shows the world, so the headline figures need their own query.
+  // Headline KPI aggregation computed server-side so multi-year (5y+) intervals
+  // never download or reduce millions of per-hex rows in the browser.
   useEffect(() => {
     if (!metadataReady) return;
     const controller = new AbortController();
     let cancelled = false;
 
-    fetchSpatialSummary(
+    fetchKpiSummary(
       {
         aoi,
         date_start: activeSlice.start,
@@ -509,41 +565,50 @@ export const App: React.FC = () => {
       controller.signal
     )
       .then((res) => {
-        if (!cancelled) setRegionHexData(res.data);
+        if (!cancelled) {
+          setRegionKpis({
+            totalFires: res.total_fires,
+            activeZoneCount: res.active_zones,
+            avgFrp: res.mean_frp,
+          });
+        }
       })
       .catch(() => {
-        if (!cancelled) setRegionHexData([]);
+        if (!cancelled) {
+          setRegionKpis({ totalFires: 0, activeZoneCount: 0, avgFrp: 0 });
+        }
       });
 
     return () => {
       cancelled = true;
       controller.abort();
     };
-  }, [metadataReady, aoiKey, aoi, sensorMode, activeSlice.start, activeSlice.end]);
+  }, [
+    metadataReady,
+    aoiKey,
+    aoi,
+    sensorMode,
+    activeSlice.start,
+    activeSlice.end,
+  ]);
 
   // Daily view: the backend withholds weekly-stored cells from windows shorter
   // than a week; this guards the map the same way and tells MapView to say so.
   const dailyStudyAreaOnly = timescale === "daily" && coarseWeekly;
   const mapHexData = useMemo(() => {
     if (!dailyStudyAreaOnly) return hexData;
+    const minExpectedRes = Math.min(FINE_GRID_RESOLUTION, mapMaxRes);
     return hexData.filter((d) => {
       try {
-        return h3.getResolution(d.h3_index) >= FINE_GRID_RESOLUTION;
+        return h3.getResolution(d.h3_index) >= minExpectedRes;
       } catch {
         return true;
       }
     });
-  }, [hexData, dailyStudyAreaOnly]);
+  }, [hexData, dailyStudyAreaOnly, mapMaxRes]);
 
   // Compute top-level KPI metrics for the active viewing slice & loop range anomalies
   const kpiStats = useMemo(() => {
-    const totalFires = regionHexData.reduce((acc, h) => acc + h.total_fires, 0);
-    const weightedFrp = regionHexData.reduce(
-      (acc, h) => acc + h.mean_frp * h.total_fires,
-      0
-    );
-    const avgFrp = totalFires > 0 ? weightedFrp / totalFires : 0;
-
     let anomalyWeeks = 0;
     let peakAnomaly: CalendarTimeSeriesPoint | null = null;
     for (const pt of calendarSeries) {
@@ -556,13 +621,13 @@ export const App: React.FC = () => {
     }
 
     return {
-      totalFires,
-      activeZoneCount: regionHexData.length,
-      avgFrp,
+      totalFires: regionKpis.totalFires,
+      activeZoneCount: regionKpis.activeZoneCount,
+      avgFrp: regionKpis.avgFrp,
       anomalyWeeks,
       peakAnomaly,
     };
-  }, [regionHexData, calendarSeries, boundsStart, boundsEnd]);
+  }, [regionKpis, calendarSeries, boundsStart, boundsEnd]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100">
@@ -967,6 +1032,7 @@ export const App: React.FC = () => {
               hasCustomAoi={hasCustomAoi}
               onChangeAoi={handleCustomAoi}
               onResetAoi={handleResetAoi}
+              onViewChange={handleMapViewChange}
               sensorMode={sensorMode}
               activeSliceLabel={activeSlice.label}
               loading={loadingMap || loadingCalendar}

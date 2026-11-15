@@ -127,6 +127,43 @@ class SpatialDuckDBEngine:
             j = i
         return inside
 
+    def get_aoi_sql_filter(
+        self, aoi_dict: Dict
+    ) -> Tuple[Optional[str], List, bool]:
+        """
+        Build a DuckDB WHERE predicate (and params) for `h3_index` filtering
+        without round-tripping all global cell IDs through Python for world or
+        rectangular AOIs.
+
+        Returns `(where_clause_or_none, params, is_empty)`.
+        - `(None, [], False)` means the AOI covers the whole globe (no filter needed).
+        - `(None, [], True)` means the AOI matched zero cells.
+        """
+        coords = aoi_dict.get("coordinates", [])
+        min_lon, min_lat, max_lon, max_lat, is_rect, _ = (
+            self._extract_bbox_and_check_rectangle(coords)
+        )
+
+        if is_rect:
+            if (
+                min_lon <= -179.9
+                and max_lon >= 179.9
+                and min_lat <= -89.9
+                and max_lat >= 89.9
+            ):
+                return (None, [], False)
+            return (
+                "h3_index IN (SELECT h3_index FROM active_cells "
+                "WHERE cell_lon BETWEEN ? AND ? AND cell_lat BETWEEN ? AND ?)",
+                [min_lon, max_lon, min_lat, max_lat],
+                False,
+            )
+
+        matching_cells = self.get_matching_h3_cells(aoi_dict)
+        if not matching_cells:
+            return (None, [], True)
+        return ("h3_index IN (SELECT UNNEST(?::VARCHAR[]))", [matching_cells], False)
+
     def get_matching_h3_cells(self, aoi_dict: Dict) -> List[str]:
         """
         Execute the 2-step spatial filter against `active_cells`:
@@ -154,24 +191,34 @@ class SpatialDuckDBEngine:
             return [r[0] for r in rows]
 
         # Case 2: Arbitrary multi-vertex polygon -> Step 1 BBox + Step 2 ST_Contains
-        if self._spatial_loaded:
+        if self._spatial_loaded and len(ring) >= 3:
+            closed_ring = list(ring)
+            if closed_ring[0] != closed_ring[-1]:
+                closed_ring.append(closed_ring[0])
             geojson_str = json.dumps(
-                {"type": "Polygon", "coordinates": coords}
+                {
+                    "type": "Polygon",
+                    "coordinates": [[[lon, lat] for lon, lat in closed_ring]],
+                }
             )
-            rows = cur.execute(
-                """
-                SELECT h3_index
-                FROM active_cells
-                WHERE cell_lon BETWEEN ? AND ?
-                  AND cell_lat BETWEEN ? AND ?
-                  AND ST_Contains(
-                        ST_GeomFromGeoJSON(?),
-                        ST_Point(cell_lon, cell_lat)
-                      )
-                """,
-                [min_lon, max_lon, min_lat, max_lat, geojson_str],
-            ).fetchall()
-            return [r[0] for r in rows]
+            try:
+                rows = cur.execute(
+                    """
+                    SELECT h3_index
+                    FROM active_cells
+                    WHERE cell_lon BETWEEN ? AND ?
+                      AND cell_lat BETWEEN ? AND ?
+                      AND ST_Contains(
+                            ST_GeomFromGeoJSON(?),
+                            ST_Point(cell_lon, cell_lat)
+                          )
+                    """,
+                    [min_lon, max_lon, min_lat, max_lat, geojson_str],
+                ).fetchall()
+                return [r[0] for r in rows]
+            except Exception:
+                # Fall back to ray-casting if a user-drawn polygon is invalid/self-intersecting
+                pass
 
         # Fallback if DuckDB spatial extension is not loaded: BBox in SQL + exact ray-casting
         candidates = cur.execute(
