@@ -656,6 +656,9 @@ export const MapView: React.FC<MapViewProps> = ({
           iconAtlas: glowSprite,
           iconMapping: GLOW_ICON_MAPPING,
           getIcon: () => "glow",
+          // On the globe, lay the glow on the surface: camera-facing sprites are
+          // back-face culled there, and surface sprites hide on the far side.
+          billboard: projection !== "globe",
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           getPosition: (d: any) => d.position,
           sizeUnits: "pixels",
@@ -685,6 +688,9 @@ export const MapView: React.FC<MapViewProps> = ({
           iconAtlas: glowSprite,
           iconMapping: GLOW_ICON_MAPPING,
           getIcon: () => "glow",
+          // On the globe, lay the glow on the surface: camera-facing sprites are
+          // back-face culled there, and surface sprites hide on the far side.
+          billboard: projection !== "globe",
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           getPosition: (d: any) => d.position,
           sizeUnits: "pixels",
@@ -860,6 +866,7 @@ export const MapView: React.FC<MapViewProps> = ({
     draftVertices,
     flickerTime,
     glowSprite,
+    projection,
   ]);
 
   return (
