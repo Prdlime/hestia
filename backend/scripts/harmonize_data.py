@@ -249,10 +249,24 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
     """Load raw NASA FIRMS CSV files, convert to H3 Resolution 8, and aggregate by cell-day."""
     frames: List[pl.DataFrame] = []
     country_frames: List[pl.DataFrame] = []
+    skipped_rows = 0
     for path in csv_paths:
-        raw_df = pl.read_csv(path, ignore_errors=True)
+        try:
+            raw_df = pl.read_csv(
+                path,
+                ignore_errors=True,
+                # Archives occasionally arrive with damaged rows (interleaved
+                # lines from an interrupted download). Keep the good rows
+                # rather than failing the whole run; the validity filter below
+                # removes whatever the damage produced.
+                truncate_ragged_lines=True,
+            )
+        except Exception as exc:
+            print(f"[ETL] Skipping unreadable file {os.path.basename(path)}: {exc}")
+            continue
         cols_lower = {c.lower(): c for c in raw_df.columns}
 
+        country_col = cols_lower.get("country_id") or cols_lower.get("country")
         lat_col = cols_lower.get("latitude") or cols_lower.get("lat")
         lon_col = cols_lower.get("longitude") or cols_lower.get("lon")
         date_col = cols_lower.get("acq_date") or cols_lower.get("date")
@@ -262,8 +276,52 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
         if not (lat_col and lon_col and date_col):
             continue
 
-        lats = raw_df[lat_col].cast(pl.Float64).to_list()
-        lons = raw_df[lon_col].cast(pl.Float64).to_list()
+        # Parse leniently, then drop anything that is not a plausible
+        # observation. Corrupted rows survive CSV parsing as nonsense values.
+        parsed = raw_df.select(
+            pl.col(lat_col).cast(pl.Float64, strict=False).alias("lat"),
+            pl.col(lon_col).cast(pl.Float64, strict=False).alias("lon"),
+            pl.col(date_col)
+            .cast(pl.Utf8, strict=False)
+            .str.to_date("%Y-%m-%d", strict=False)
+            .alias("acq_date"),
+            (
+                pl.col(frp_col).cast(pl.Float64, strict=False)
+                if frp_col
+                else pl.lit(20.0, dtype=pl.Float64)
+            ).alias("frp"),
+            (
+                pl.col(inst_col).cast(pl.Utf8, strict=False)
+                if inst_col
+                else pl.lit(None, dtype=pl.Utf8)
+            ).alias("instrument"),
+            (
+                pl.col(country_col).cast(pl.Utf8, strict=False)
+                if country_col
+                else pl.lit(None, dtype=pl.Utf8)
+            ).alias("country_raw"),
+        )
+
+        before = parsed.height
+        parsed = parsed.filter(
+            pl.col("lat").is_between(-90.0, 90.0)
+            & pl.col("lon").is_between(-180.0, 180.0)
+            & pl.col("acq_date").is_not_null()
+            & pl.col("acq_date").is_between(date(2000, 1, 1), date(2100, 1, 1))
+        ).with_columns(pl.col("frp").fill_null(15.0).clip(0.0, 100000.0))
+
+        dropped = before - parsed.height
+        if dropped:
+            skipped_rows += dropped
+            print(
+                f"[ETL] {os.path.basename(path)}: dropped {dropped:,} invalid "
+                f"row(s) of {before:,}"
+            )
+        if parsed.height == 0:
+            continue
+
+        lats = parsed["lat"].to_list()
+        lons = parsed["lon"].to_list()
         h3_cells = [
             h3.latlng_to_cell(
                 float(la), float(lo), grid_resolution_for(float(la), float(lo))
@@ -272,7 +330,7 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
         ]
 
         if inst_col:
-            inst_vals = [str(v).upper() for v in raw_df[inst_col].to_list()]
+            inst_vals = [str(v).upper() for v in parsed["instrument"].to_list()]
             sensors = [
                 "viirs" if ("VIIRS" in v or v in ("N", "N20", "N21", "SNPP")) else "modis"
                 for v in inst_vals
@@ -282,21 +340,16 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
             default_sensor = "viirs" if "viirs" in fname else "modis"
             sensors = [default_sensor] * len(h3_cells)
 
-        frps = (
-            raw_df[frp_col].cast(pl.Float64).fill_null(15.0).to_list()
-            if frp_col
-            else [20.0] * len(h3_cells)
-        )
+        frps = parsed["frp"].to_list()
 
         # The filename is the most reliable source; the country_id column holds
         # ISO codes ("MYS") that need translating before they reach a map label.
         file_country = country_from_filename(path)
-        country_col = cols_lower.get("country_id") or cols_lower.get("country")
         if file_country:
             countries = [file_country] * len(h3_cells)
         elif country_col:
             countries = [
-                normalize_country(str(v)) for v in raw_df[country_col].to_list()
+                normalize_country(str(v)) for v in parsed["country_raw"].to_list()
             ]
         else:
             countries = [None] * len(h3_cells)
@@ -309,7 +362,7 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
         standardized = pl.DataFrame(
             {
                 "h3_index": h3_cells,
-                "acq_date": raw_df[date_col].cast(pl.Utf8).str.to_date("%Y-%m-%d", strict=False),
+                "acq_date": parsed["acq_date"],
                 "sensor": sensors,
                 "frp": frps,
                 "country": pl.Series(countries, dtype=pl.Utf8),
@@ -342,6 +395,9 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
             .agg(pl.len().alias("n"))
         )
         del standardized, raw_df
+
+    if skipped_rows:
+        print(f"[ETL] Dropped {skipped_rows:,} invalid row(s) across all files")
 
     if not frames:
         raise ValueError("No valid NASA FIRMS CSV files could be parsed from raw directory.")
