@@ -245,6 +245,27 @@ def _infer_region_name(lat: float, lon: float) -> str:
     return "Open Ocean & Remote Islands"
 
 
+# Partial aggregates are merged every this many files. Left to accumulate, the
+# per-file frames together hold several times more rows than the merged result.
+CONSOLIDATE_EVERY = 150
+
+
+def _merge_observations(frames: List[pl.DataFrame]) -> pl.DataFrame:
+    return (
+        pl.concat(frames)
+        .group_by(["h3_index", "acq_date", "sensor", "in_study"])
+        .agg(pl.col("n").sum(), pl.col("frp_sum").sum())
+    )
+
+
+def _merge_countries(frames: List[pl.DataFrame]) -> pl.DataFrame:
+    return (
+        pl.concat(frames)
+        .group_by(["h3_index", "country"])
+        .agg(pl.col("n").sum())
+    )
+
+
 def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dict]]:
     """Load raw NASA FIRMS CSV files, convert to H3 Resolution 8, and aggregate by cell-day."""
     frames: List[pl.DataFrame] = []
@@ -396,17 +417,17 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
         )
         del standardized, raw_df
 
+        if len(frames) >= CONSOLIDATE_EVERY:
+            frames = [_merge_observations(frames)]
+            country_frames = [_merge_countries(country_frames)]
+
     if skipped_rows:
         print(f"[ETL] Dropped {skipped_rows:,} invalid row(s) across all files")
 
     if not frames:
         raise ValueError("No valid NASA FIRMS CSV files could be parsed from raw directory.")
 
-    combined = (
-        pl.concat(frames)
-        .group_by(["h3_index", "acq_date", "sensor", "in_study"])
-        .agg(pl.col("n").sum(), pl.col("frp_sum").sum())
-    )
+    combined = _merge_observations(frames)
     del frames
 
     def _per_sensor(sensor: str, count_name: str, frp_name: str) -> pl.DataFrame:
@@ -437,9 +458,7 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
     # unambiguous except right on a border.
     cell_country = {
         row["h3_index"]: row["country"]
-        for row in pl.concat(country_frames)
-        .group_by(["h3_index", "country"])
-        .agg(pl.col("n").sum())
+        for row in _merge_countries(country_frames)
         .sort(["h3_index", "n"], descending=[False, True])
         .unique(subset=["h3_index"], keep="first")
         .to_dicts()
