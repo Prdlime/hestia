@@ -31,49 +31,8 @@ import h3
 import numpy as np
 import polars as pl
 
+from app.datapaths import get_data_dir
 from scripts.sample_malaysia import generate_malaysia_raw_observations
-
-
-def get_data_dir() -> Path:
-    """Resolve data directory, falling back to /tmp on read-only serverless runtimes."""
-    env_dir = os.environ.get("DATA_DIR")
-    if env_dir:
-        return Path(env_dir)
-
-    repo_data_dir = Path(__file__).resolve().parent.parent.parent / "data"
-    if (
-        (repo_data_dir / "harmonized_fires.parquet").exists()
-        and (repo_data_dir / "active_cells.parquet").exists()
-        and (repo_data_dir / "metadata.json").exists()
-    ):
-        return repo_data_dir
-
-    if os.environ.get("VERCEL"):
-        return Path(tempfile.gettempdir()) / "hestia_data"
-
-    try:
-        repo_data_dir.mkdir(parents=True, exist_ok=True)
-        return repo_data_dir
-    except OSError:
-        return Path(tempfile.gettempdir()) / "hestia_data"
-
-
-# --- Global grid configuration -------------------------------------------------
-# Fires are stored on H3 hexagons. Inside the Southeast Asian study area we keep
-# the fine ~1 km grid (resolution 8); everywhere else a ~7 km grid (resolution 6)
-# keeps a worldwide, multi-decade dataset small enough to ship with the backend.
-FINE_RESOLUTION = 8
-COARSE_RESOLUTION = int(os.environ.get("HESTIA_COARSE_RESOLUTION", "5"))
-
-# Outside the study area, fires are bucketed into ISO weeks rather than days.
-# Nearly all detections fall outside it, so this is the single biggest saving;
-# the calendar and trend charts are weekly anyway, so only a day-level view of
-# a region outside Southeast Asia is affected.
-COARSE_WEEKLY = os.environ.get("HESTIA_COARSE_WEEKLY", "1") != "0"
-
-# (lon_min, lat_min, lon_max, lat_max)
-STUDY_AREA_BBOX = (92.0, -12.0, 142.0, 23.0)
-MALAYSIA_BBOX = (99.0, 0.5, 119.6, 7.6)
 
 
 def _in_bbox(lat: float, lon: float, bbox: Tuple[float, float, float, float]) -> bool:

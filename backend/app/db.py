@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import duckdb
 
-from scripts.harmonize_data import get_data_dir, run_harmonization_pipeline
+from app.datapaths import DATASET_FILES, get_data_dir
 
 
 class SpatialDuckDBEngine:
@@ -19,9 +19,25 @@ class SpatialDuckDBEngine:
         self._metadata: Dict = {}
         self._parquet_mtime: float = 0.0
 
+    @staticmethod
+    def _ensure_dataset() -> Dict:
+        """
+        Load the dataset metadata, building the Parquet files first if they are
+        missing. The ETL is imported lazily: a deployment ships pre-built data,
+        so the serving path never needs polars.
+        """
+        data_dir = get_data_dir()
+        if all((data_dir / name).exists() for name in DATASET_FILES):
+            with open(data_dir / "metadata.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+
+        from scripts.harmonize_data import run_harmonization_pipeline
+
+        return run_harmonization_pipeline(force=False)
+
     def initialize(self) -> None:
         """Ensure Parquet files exist, initialize DuckDB, and load tables into memory."""
-        self._metadata = run_harmonization_pipeline(force=False)
+        self._metadata = self._ensure_dataset()
         data_dir: Path = get_data_dir()
         fires_file = data_dir / "harmonized_fires.parquet"
         fires_path = str(fires_file)
