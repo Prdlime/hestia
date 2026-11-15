@@ -25,7 +25,6 @@ import { CalendarHeatmap } from "./components/CalendarHeatmap";
 import * as h3 from "h3-js";
 import { MALAYSIA_PRESET_AOIS } from "./constants/presets";
 import { ClimatologyChart } from "./components/ClimatologyChart";
-import { DatePartsSelect } from "./components/DatePartsSelect";
 import { MapView } from "./components/MapView";
 import { InfoTooltip, Tooltip } from "./components/Tooltip";
 import {
@@ -100,6 +99,23 @@ export const App: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>(1);
   const [sensorMode, setSensorMode] = useState<SensorMode>("harmonized");
+
+  const startDateInputRef = useRef<HTMLInputElement>(null);
+  const endDateInputRef = useRef<HTMLInputElement>(null);
+
+  const openDatePicker = (ref: React.RefObject<HTMLInputElement>) => {
+    const el = ref.current;
+    if (!el) return;
+    if (typeof el.showPicker === "function") {
+      try {
+        el.showPicker();
+        return;
+      } catch {
+        // Fallback to focus if showPicker fails
+      }
+    }
+    el.focus();
+  };
 
   // API response state
   const [hexData, setHexData] = useState<SpatialHexDatum[]>([]);
@@ -700,42 +716,60 @@ export const App: React.FC = () => {
             >
               <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-xs shrink-0">
                 <div className="flex items-center gap-1">
-                  <Calendar
-                    className="w-3.5 h-3.5 shrink-0 text-slate-400"
-                    aria-hidden="true"
-                  />
-                  <DatePartsSelect
-                    label="Playback start"
+                  <button
+                    type="button"
+                    onClick={() => openDatePicker(startDateInputRef)}
+                    title="Open playback start date calendar"
+                    aria-label="Open playback start date calendar"
+                    className="text-slate-400 hover:text-sky-400 transition-colors p-0.5 rounded hover:bg-slate-800/70"
+                  >
+                    <Calendar className="w-3.5 h-3.5 shrink-0" />
+                  </button>
+                  <input
+                    ref={startDateInputRef}
+                    type="date"
                     value={boundsStart}
                     min={dataBounds.min}
                     max={boundsEnd}
-                    onChange={(nextStart) => {
+                    onChange={(e) => {
+                      const nextStart = e.target.value;
+                      if (!nextStart) return;
                       setBoundsStart(nextStart);
                       setCursorDate((prev) =>
                         clampDate(prev, nextStart, boundsEnd)
                       );
                     }}
+                    className="custom-date-input bg-transparent text-slate-200 font-sans tabular-nums text-[11px] focus:outline-none w-[96px]"
                   />
                 </div>
 
                 <span className="text-slate-500 select-none">→</span>
 
                 <div className="flex items-center gap-1">
-                  <Calendar
-                    className="w-3.5 h-3.5 shrink-0 text-slate-400"
-                    aria-hidden="true"
-                  />
-                  <DatePartsSelect
-                    label="Playback end"
+                  <button
+                    type="button"
+                    onClick={() => openDatePicker(endDateInputRef)}
+                    title="Open playback end date calendar"
+                    aria-label="Open playback end date calendar"
+                    className="text-slate-400 hover:text-sky-400 transition-colors p-0.5 rounded hover:bg-slate-800/70"
+                  >
+                    <Calendar className="w-3.5 h-3.5 shrink-0" />
+                  </button>
+                  <input
+                    ref={endDateInputRef}
+                    type="date"
                     value={boundsEnd}
                     min={boundsStart}
                     max={dataBounds.max}
-                    onChange={(nextEnd) => {
+                    onChange={(e) => {
+                      const nextEnd = e.target.value;
+                      if (!nextEnd) return;
                       setBoundsEnd(nextEnd);
                       setCursorDate((prev) =>
                         clampDate(prev, boundsStart, nextEnd)
                       );
                     }}
+                    className="custom-date-input bg-transparent text-slate-200 font-sans tabular-nums text-[11px] focus:outline-none w-[96px]"
                   />
                 </div>
               </div>
