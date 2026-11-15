@@ -69,7 +69,9 @@ type PlaybackSpeed = 1 | 2 | 4;
 
 export const App: React.FC = () => {
   const [aoi, setAoi] = useState<GeoJSONPolygon>(DEFAULT_ANALYSIS_AOI);
-  const [hasCustomAoi, setHasCustomAoi] = useState<boolean>(true);
+  // False until the user draws something: the default region feeds the
+  // headline figures, but nothing is outlined on a map nobody has touched.
+  const [hasCustomAoi, setHasCustomAoi] = useState<boolean>(false);
   // Fire density for the whole planet, shown on the map regardless of which
   // region is selected for analysis.
   const [regionHexData, setRegionHexData] = useState<SpatialHexDatum[]>([]);
@@ -471,7 +473,7 @@ export const App: React.FC = () => {
 
   const handleResetAoi = useCallback(() => {
     setAoi(DEFAULT_ANALYSIS_AOI);
-    setHasCustomAoi(true);
+    setHasCustomAoi(false);
   }, []);
 
   // Highlight active viewing slice on the Burning Activity Calendar
