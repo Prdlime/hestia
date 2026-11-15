@@ -115,6 +115,8 @@ interface MapViewProps {
   onResetAoi: () => void;
   sensorMode: SensorMode;
   activeSliceLabel?: string;
+  /** Weekly-bucketed cells withheld from a daily view; 0 when nothing is hidden. */
+  coarseHiddenCount?: number;
   loading: boolean;
 }
 
@@ -383,6 +385,7 @@ export const MapView: React.FC<MapViewProps> = ({
   onResetAoi,
   sensorMode,
   activeSliceLabel,
+  coarseHiddenCount = 0,
   loading,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -1341,12 +1344,18 @@ export const MapView: React.FC<MapViewProps> = ({
               {activeSliceLabel}
             </span>
           )}
-          {loading && (
-            <span className="text-[11px] text-amber-400 animate-pulse">
-              Updating...
-            </span>
-          )}
         </div>
+        {coarseHiddenCount > 0 && (
+          <div className="mb-1.5 max-w-[230px] text-[10px] leading-snug text-amber-300/90">
+            Daily view shows Southeast Asia only — elsewhere fires are recorded
+            weekly.
+          </div>
+        )}
+        {loading && (
+          <div className="mb-1.5 text-[11px] text-amber-400 animate-pulse">
+            Updating...
+          </div>
+        )}
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] text-slate-400">Low</span>
           <div className="h-2 w-8 rounded-sm bg-yellow-300/90" />

@@ -22,6 +22,7 @@ import {
   fetchTrendSeries,
 } from "./api/client";
 import { CalendarHeatmap } from "./components/CalendarHeatmap";
+import * as h3 from "h3-js";
 import { MALAYSIA_PRESET_AOIS } from "./constants/presets";
 import { ClimatologyChart } from "./components/ClimatologyChart";
 import { MapView } from "./components/MapView";
@@ -64,6 +65,12 @@ const WORLD_AOI: GeoJSONPolygon = {
 // while the numbers stay meaningful for somewhere in particular.
 const DEFAULT_ANALYSIS_AOI: GeoJSONPolygon =
   MALAYSIA_PRESET_AOIS[0]?.polygon ?? WORLD_AOI;
+
+// Detections outside the study area are stored one bucket per week, stamped on
+// that week's Monday. Shown on a daily view they would read as a huge Monday
+// spike and six empty days, so the daily view is limited to the study area,
+// which is stored day by day. Fine cells are resolution 8; coarse ones are 4.
+const FINE_GRID_RESOLUTION = 8;
 
 type PlaybackSpeed = 1 | 2 | 4;
 
@@ -511,6 +518,24 @@ export const App: React.FC = () => {
     };
   }, [metadataReady, aoiKey, aoi, sensorMode, activeSlice.start, activeSlice.end]);
 
+  // Daily view: drop the weekly buckets so the map never shows a false spike.
+  const { mapHexData, coarseHiddenCount } = useMemo(() => {
+    if (timescale !== "daily") {
+      return { mapHexData: hexData, coarseHiddenCount: 0 };
+    }
+    const fine = hexData.filter((d) => {
+      try {
+        return h3.getResolution(d.h3_index) >= FINE_GRID_RESOLUTION;
+      } catch {
+        return true;
+      }
+    });
+    return {
+      mapHexData: fine,
+      coarseHiddenCount: hexData.length - fine.length,
+    };
+  }, [hexData, timescale]);
+
   // Compute top-level KPI metrics for the active viewing slice & loop range anomalies
   const kpiStats = useMemo(() => {
     const totalFires = regionHexData.reduce((acc, h) => acc + h.total_fires, 0);
@@ -937,7 +962,8 @@ export const App: React.FC = () => {
           {/* Top Row: Interactive Map UI (full width) */}
           <div className="h-[460px] lg:h-[60vh] lg:min-h-[480px] lg:max-h-[760px] flex flex-col">
             <MapView
-              hexData={hexData}
+              hexData={mapHexData}
+              coarseHiddenCount={coarseHiddenCount}
               aoi={aoi}
               hasCustomAoi={hasCustomAoi}
               onChangeAoi={handleCustomAoi}
