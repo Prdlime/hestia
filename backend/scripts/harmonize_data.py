@@ -248,6 +248,7 @@ def _infer_region_name(lat: float, lon: float) -> str:
 def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dict]]:
     """Load raw NASA FIRMS CSV files, convert to H3 Resolution 8, and aggregate by cell-day."""
     frames: List[pl.DataFrame] = []
+    country_frames: List[pl.DataFrame] = []
     for path in csv_paths:
         raw_df = pl.read_csv(path, ignore_errors=True)
         cols_lower = {c.lower(): c for c in raw_df.columns}
@@ -325,30 +326,47 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
                 .alias("acq_date")
             )
 
-        frames.append(standardized)
+        # Collapse each file to cell-day totals immediately. A whole-planet
+        # archive runs to tens of millions of detections, far more than fits in
+        # memory at once, but the aggregate of one country-year is small. FRP is
+        # carried as a sum so partial aggregates can be merged exactly.
+        frames.append(
+            standardized.group_by(["h3_index", "acq_date", "sensor", "in_study"]).agg(
+                pl.len().cast(pl.Int64).alias("n"),
+                pl.col("frp").sum().alias("frp_sum"),
+            )
+        )
+        country_frames.append(
+            standardized.drop_nulls("country")
+            .group_by(["h3_index", "country"])
+            .agg(pl.len().alias("n"))
+        )
+        del standardized, raw_df
 
     if not frames:
         raise ValueError("No valid NASA FIRMS CSV files could be parsed from raw directory.")
 
-    combined = pl.concat(frames)
-
-    modis_daily = (
-        combined.filter(pl.col("sensor") == "modis")
-        .group_by(["h3_index", "acq_date", "in_study"])
-        .agg(
-            pl.len().cast(pl.Int32).alias("modis_count"),
-            pl.col("frp").mean().round(2).alias("modis_frp"),
-        )
+    combined = (
+        pl.concat(frames)
+        .group_by(["h3_index", "acq_date", "sensor", "in_study"])
+        .agg(pl.col("n").sum(), pl.col("frp_sum").sum())
     )
+    del frames
 
-    viirs_daily = (
-        combined.filter(pl.col("sensor") == "viirs")
-        .group_by(["h3_index", "acq_date", "in_study"])
-        .agg(
-            pl.len().cast(pl.Int32).alias("viirs_count"),
-            pl.col("frp").mean().round(2).alias("viirs_frp"),
+    def _per_sensor(sensor: str, count_name: str, frp_name: str) -> pl.DataFrame:
+        return (
+            combined.filter(pl.col("sensor") == sensor)
+            .select(
+                "h3_index",
+                "acq_date",
+                "in_study",
+                pl.col("n").cast(pl.Int32).alias(count_name),
+                (pl.col("frp_sum") / pl.col("n")).round(2).alias(frp_name),
+            )
         )
-    )
+
+    modis_daily = _per_sensor("modis", "modis_count", "modis_frp")
+    viirs_daily = _per_sensor("viirs", "viirs_count", "viirs_frp")
 
     daily = modis_daily.join(
         viirs_daily, on=["h3_index", "acq_date", "in_study"], how="full", coalesce=True
@@ -363,9 +381,9 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
     # unambiguous except right on a border.
     cell_country = {
         row["h3_index"]: row["country"]
-        for row in combined.drop_nulls("country")
+        for row in pl.concat(country_frames)
         .group_by(["h3_index", "country"])
-        .agg(pl.len().alias("n"))
+        .agg(pl.col("n").sum())
         .sort(["h3_index", "n"], descending=[False, True])
         .unique(subset=["h3_index"], keep="first")
         .to_dicts()
