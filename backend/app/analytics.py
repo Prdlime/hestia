@@ -29,6 +29,20 @@ SENSOR_COLUMN_MAP: Dict[str, Tuple[str, str]] = {
 }
 
 
+# H3 index text carries its resolution in the second hex digit. The study
+# area is stored on the fine resolution-8 grid, day by day; coarser cells hold
+# one bucket per week (see scripts/harmonize_data.py).
+_FINE_CELL_SQL = "substr(h3_index, 2, 1) = '8'"
+
+
+def _weekly_buckets_outside_study_area() -> bool:
+    return bool((db_engine.metadata or {}).get("coarse_weekly_outside_study_area"))
+
+
+def _parse_iso_date(value: str) -> date:
+    return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+
+
 def _iso_week_to_mmdd(week_num: int, is_end: bool = False) -> str:
     """Convert an ISO week number (1..52) into an 'MM-DD' date string using reference year 2025."""
     clamped = max(1, min(52, int(week_num)))
@@ -106,6 +120,31 @@ def query_spatial_summary(
     )
 
     cur = db_engine.cursor()
+
+    # Outside the study area a whole week of detections is stored on that
+    # week's Monday. A window shorter than a week must not show such a bucket
+    # unless it covers the bucket's full week (cut short where the data ends):
+    # otherwise a single Monday would display seven days of fires.
+    date_filter = "acq_date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)"
+    params: List = [matching_cells, date_start, date_end]
+    window_days = (_parse_iso_date(date_end) - _parse_iso_date(date_start)).days + 1
+    if _weekly_buckets_outside_study_area() and window_days < 7:
+        _, data_max = _get_dataset_date_bounds()
+        date_filter = f"""(
+            ({_FINE_CELL_SQL} AND acq_date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE))
+            OR (NOT {_FINE_CELL_SQL}
+                AND acq_date >= CAST(? AS DATE)
+                AND LEAST(acq_date + INTERVAL 6 DAY, CAST(? AS DATE)) <= CAST(? AS DATE))
+        )"""
+        params = [
+            matching_cells,
+            date_start,
+            date_end,
+            date_start,
+            data_max.isoformat(),
+            date_end,
+        ]
+
     sql = f"""
         SELECT
             h3_index,
@@ -116,12 +155,12 @@ def query_spatial_summary(
             ) AS mean_frp
         FROM harmonized_fires
         WHERE h3_index IN (SELECT UNNEST(?::VARCHAR[]))
-          AND acq_date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+          AND {date_filter}
           AND {count_col} > 0
         GROUP BY h3_index
         ORDER BY total_fires DESC
     """
-    rows = cur.execute(sql, [matching_cells, date_start, date_end]).fetchall()
+    rows = cur.execute(sql, params).fetchall()
 
     records = [
         SpatialHexRecord(
@@ -338,6 +377,10 @@ def _query_daily_trend(
     dt_start: date,
     dt_end: date,
 ) -> List[TrendPoint]:
+    # A day-by-day series can only be drawn from cells that are stored daily.
+    daily_cells_filter = (
+        _FINE_CELL_SQL if _weekly_buckets_outside_study_area() else "TRUE"
+    )
     sql = f"""
         SELECT
             acq_date::DATE AS obs_day,
@@ -345,6 +388,7 @@ def _query_daily_trend(
         FROM harmonized_fires
         WHERE h3_index IN (SELECT UNNEST(?::VARCHAR[]))
           AND {count_col} > 0
+          AND {daily_cells_filter}
         GROUP BY obs_day
         ORDER BY obs_day
     """

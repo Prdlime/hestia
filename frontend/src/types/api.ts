@@ -73,6 +73,7 @@ export interface TrendSeriesResponse {
 export interface HealthMetadata {
   source_mode?: string;
   h3_resolution?: number;
+  coarse_weekly_outside_study_area?: boolean;
   calibration_alpha_count?: number;
   calibration_gamma_frp?: number;
   overlap_sample_size?: number;

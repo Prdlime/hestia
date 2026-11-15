@@ -115,8 +115,8 @@ interface MapViewProps {
   onResetAoi: () => void;
   sensorMode: SensorMode;
   activeSliceLabel?: string;
-  /** Weekly-bucketed cells withheld from a daily view; 0 when nothing is hidden. */
-  coarseHiddenCount?: number;
+  /** Daily view of a dataset whose world outside the study area is weekly. */
+  dailyStudyAreaOnly?: boolean;
   loading: boolean;
 }
 
@@ -385,7 +385,7 @@ export const MapView: React.FC<MapViewProps> = ({
   onResetAoi,
   sensorMode,
   activeSliceLabel,
-  coarseHiddenCount = 0,
+  dailyStudyAreaOnly = false,
   loading,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -1345,7 +1345,7 @@ export const MapView: React.FC<MapViewProps> = ({
             </span>
           )}
         </div>
-        {coarseHiddenCount > 0 && (
+        {dailyStudyAreaOnly && (
           <div className="mb-1.5 max-w-[230px] text-[10px] leading-snug text-amber-300/90">
             Daily view shows Southeast Asia only — elsewhere fires are recorded
             weekly.

@@ -82,6 +82,8 @@ export const App: React.FC = () => {
   // Fire density for the whole planet, shown on the map regardless of which
   // region is selected for analysis.
   const [regionHexData, setRegionHexData] = useState<SpatialHexDatum[]>([]);
+  // True when the dataset stores the world outside the study area weekly.
+  const [coarseWeekly, setCoarseWeekly] = useState<boolean>(false);
 
   const [dataBounds, setDataBounds] = useState<{ min: string; max: string }>({
     min: "2005-01-01",
@@ -144,6 +146,7 @@ export const App: React.FC = () => {
         const minDt = meta.date_min || "2005-01-01";
         const maxDt = meta.date_max || "2026-11-10";
         setDataBounds({ min: minDt, max: maxDt });
+        setCoarseWeekly(Boolean(meta.coarse_weekly_outside_study_area));
         setBoundsStart(minDt);
         setBoundsEnd(maxDt);
         setCursorDate(maxDt);
@@ -518,23 +521,19 @@ export const App: React.FC = () => {
     };
   }, [metadataReady, aoiKey, aoi, sensorMode, activeSlice.start, activeSlice.end]);
 
-  // Daily view: drop the weekly buckets so the map never shows a false spike.
-  const { mapHexData, coarseHiddenCount } = useMemo(() => {
-    if (timescale !== "daily") {
-      return { mapHexData: hexData, coarseHiddenCount: 0 };
-    }
-    const fine = hexData.filter((d) => {
+  // Daily view: the backend withholds weekly-stored cells from windows shorter
+  // than a week; this guards the map the same way and tells MapView to say so.
+  const dailyStudyAreaOnly = timescale === "daily" && coarseWeekly;
+  const mapHexData = useMemo(() => {
+    if (!dailyStudyAreaOnly) return hexData;
+    return hexData.filter((d) => {
       try {
         return h3.getResolution(d.h3_index) >= FINE_GRID_RESOLUTION;
       } catch {
         return true;
       }
     });
-    return {
-      mapHexData: fine,
-      coarseHiddenCount: hexData.length - fine.length,
-    };
-  }, [hexData, timescale]);
+  }, [hexData, dailyStudyAreaOnly]);
 
   // Compute top-level KPI metrics for the active viewing slice & loop range anomalies
   const kpiStats = useMemo(() => {
@@ -963,7 +962,7 @@ export const App: React.FC = () => {
           <div className="h-[460px] lg:h-[60vh] lg:min-h-[480px] lg:max-h-[760px] flex flex-col">
             <MapView
               hexData={mapHexData}
-              coarseHiddenCount={coarseHiddenCount}
+              dailyStudyAreaOnly={dailyStudyAreaOnly}
               aoi={aoi}
               hasCustomAoi={hasCustomAoi}
               onChangeAoi={handleCustomAoi}
