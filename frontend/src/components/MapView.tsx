@@ -152,6 +152,8 @@ function createGlowSprite(): string {
 
 // Light adds up where glows overlap, the way real firelight does.
 const ADDITIVE_GLOW_PARAMETERS = {
+  // deck.gl's globe view culls back faces, which drops camera-facing sprites.
+  cullMode: "none",
   depthWriteEnabled: false,
   blend: true,
   blendColorOperation: "add",
@@ -229,6 +231,8 @@ export const MapView: React.FC<MapViewProps> = ({
 
   // Clock (seconds) that drives the ember flicker; stays 0 when motion is reduced.
   const [flickerTime, setFlickerTime] = useState<number>(0);
+  // Bumped whenever the camera settles, so far-side glow hiding stays current.
+  const [viewTick, setViewTick] = useState<number>(0);
   const glowSprite = useMemo(() => createGlowSprite(), []);
 
   const drawModeRef = useRef<DrawMode>(drawMode);
@@ -362,6 +366,10 @@ export const MapView: React.FC<MapViewProps> = ({
 
     map.on("zoom", () => {
       setCurrentZoom(map.getZoom());
+    });
+
+    map.on("moveend", () => {
+      setViewTick((t) => t + 1);
     });
 
     // Re-apply the projection each time a style (Dark / Satellite) finishes loading.
@@ -647,18 +655,28 @@ export const MapView: React.FC<MapViewProps> = ({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const intensity = (d: any) => Math.sqrt(d.total_fires / maxClusterFires);
 
+      // With culling off, glows on the far side of the globe would shine through
+      // the planet, so drop the ones MapLibre reports as hidden behind it.
+      const map = mapRef.current;
+      const emberData =
+        projection === "globe" && map
+          ? clusteredBeacons.filter(
+              (d) =>
+                !map.transform.isLocationOccluded(
+                  new maplibregl.LngLat(d.position[0], d.position[1])
+                )
+            )
+          : clusteredBeacons;
+
       // Pass A: Wide, faint heat halo in the fire's intensity colour
       layers.push(
         new IconLayer({
           id: "fire-cluster-halo",
-          data: clusteredBeacons,
+          data: emberData,
           pickable: false,
           iconAtlas: glowSprite,
           iconMapping: GLOW_ICON_MAPPING,
           getIcon: () => "glow",
-          // On the globe, lay the glow on the surface: camera-facing sprites are
-          // back-face culled there, and surface sprites hide on the far side.
-          billboard: projection !== "globe",
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           getPosition: (d: any) => d.position,
           sizeUnits: "pixels",
@@ -683,14 +701,11 @@ export const MapView: React.FC<MapViewProps> = ({
       layers.push(
         new IconLayer({
           id: "fire-cluster-flame",
-          data: clusteredBeacons,
+          data: emberData,
           pickable: false,
           iconAtlas: glowSprite,
           iconMapping: GLOW_ICON_MAPPING,
           getIcon: () => "glow",
-          // On the globe, lay the glow on the surface: camera-facing sprites are
-          // back-face culled there, and surface sprites hide on the far side.
-          billboard: projection !== "globe",
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           getPosition: (d: any) => d.position,
           sizeUnits: "pixels",
@@ -867,6 +882,7 @@ export const MapView: React.FC<MapViewProps> = ({
     flickerTime,
     glowSprite,
     projection,
+    viewTick,
   ]);
 
   return (
