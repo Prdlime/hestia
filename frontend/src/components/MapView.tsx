@@ -888,7 +888,12 @@ export const MapView: React.FC<MapViewProps> = ({
         wireframe: false,
         filled: true,
         extruded: false,
-        opacity: extruded3D ? hexOpacity * 0.5 : hexOpacity,
+        // In 3D View the footprints breathe between faint and bright, in time
+        // with the heat rings. This is one shared opacity, so it costs nothing
+        // per hexagon. 2D View keeps them steady for reading values.
+        opacity: extruded3D
+          ? hexOpacity * (0.2 + 0.5 * (0.5 + 0.5 * Math.sin(flickerTime * 2.6)))
+          : hexOpacity,
         getHexagon: (d) => d.h3_index,
         getFillColor: (d) => getFireColor(d.total_fires, maxFires),
         highPrecision: true,
