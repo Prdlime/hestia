@@ -8,8 +8,10 @@ import {
   Box,
   Check,
   Compass,
+  Earth,
   Globe,
   Layers,
+  Map as MapIcon,
   MousePointer,
   Pentagon,
   RotateCcw,
@@ -63,6 +65,26 @@ const SATELLITE_STYLE: StyleSpecification = {
 };
 
 type DrawMode = "none" | "bbox" | "polygon";
+type MapProjection = "globe" | "flat";
+
+// Camera the map settles on: Malaysia and its neighbours.
+const HOME_CENTER: [number, number] = [109.2, 3.8];
+const HOME_ZOOM = 5.3;
+// Zoom the page opens at, so the whole globe is visible before flying in.
+const INTRO_ZOOM = 1.4;
+
+// Apply the chosen projection (and a soft atmosphere halo for the globe).
+// MapLibre resets both whenever a new style is loaded, so this runs on every
+// "style.load" as well as when the user flips the Globe / Flat switch.
+function applyProjection(map: maplibregl.Map, projection: MapProjection) {
+  map.setProjection({ type: projection === "globe" ? "globe" : "mercator" });
+  map.setSky({
+    "atmosphere-blend":
+      projection === "globe"
+        ? ["interpolate", ["linear"], ["zoom"], 0, 0.8, 4.5, 0.6, 6.5, 0]
+        : 0,
+  });
+}
 
 interface FireBeaconCluster {
   id: string;
@@ -116,7 +138,10 @@ export const MapView: React.FC<MapViewProps> = ({
 
   const [basemap, setBasemap] = useState<"dark" | "satellite">("dark");
   const [extruded3D, setExtruded3D] = useState<boolean>(true);
-  const [currentZoom, setCurrentZoom] = useState<number>(5.3);
+  const [projection, setProjection] = useState<MapProjection>("globe");
+  const projectionRef = useRef<MapProjection>(projection);
+  projectionRef.current = projection;
+  const [currentZoom, setCurrentZoom] = useState<number>(INTRO_ZOOM);
   const [drawMode, setDrawMode] = useState<DrawMode>("none");
   const [draftVertices, setDraftVertices] = useState<[number, number][]>([]);
   const [cursorLonLat, setCursorLonLat] = useState<[number, number] | null>(
@@ -237,9 +262,9 @@ export const MapView: React.FC<MapViewProps> = ({
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
       style: DARK_MATTER_STYLE,
-      center: [109.2, 3.8],
-      zoom: 5.3,
-      pitch: 36,
+      center: HOME_CENTER,
+      zoom: INTRO_ZOOM,
+      pitch: 0,
       bearing: 0,
       attributionControl: false,
       // Show a single world: no repeated copies when zoomed out on a wide map.
@@ -259,6 +284,21 @@ export const MapView: React.FC<MapViewProps> = ({
 
     map.on("zoom", () => {
       setCurrentZoom(map.getZoom());
+    });
+
+    // Re-apply the projection each time a style (Dark / Satellite) finishes loading.
+    map.on("style.load", () => {
+      applyProjection(map, projectionRef.current);
+    });
+
+    // Opening move: show the whole globe, then fly in to the region.
+    map.once("load", () => {
+      map.flyTo({
+        center: HOME_CENTER,
+        zoom: HOME_ZOOM,
+        pitch: 36,
+        duration: 3200,
+      });
     });
 
     const finalizeBoxDrag = (endPt: [number, number] | null) => {
@@ -367,6 +407,13 @@ export const MapView: React.FC<MapViewProps> = ({
     mapRef.current.setStyle(
       target === "dark" ? DARK_MATTER_STYLE : SATELLITE_STYLE
     );
+  };
+
+  const handleToggleProjection = (target: MapProjection) => {
+    setProjection(target);
+    if (mapRef.current) {
+      applyProjection(mapRef.current, target);
+    }
   };
 
   const handleToggle3D = () => {
@@ -797,6 +844,35 @@ export const MapView: React.FC<MapViewProps> = ({
           <Box className="w-3.5 h-3.5" />
           <span>{extruded3D ? "3D View" : "2D View"}</span>
         </button>
+
+        <div className="flex items-center bg-slate-900/90 backdrop-blur-md border border-slate-700/80 rounded-lg p-1 shadow-lg">
+          <button
+            type="button"
+            onClick={() => handleToggleProjection("globe")}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+              projection === "globe"
+                ? "bg-slate-700 text-white"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+            title="Show the map as a globe"
+          >
+            <Earth className="w-3.5 h-3.5" />
+            <span>Globe</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleToggleProjection("flat")}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+              projection === "flat"
+                ? "bg-slate-700 text-white"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+            title="Flatten the map to 2D"
+          >
+            <MapIcon className="w-3.5 h-3.5" />
+            <span>Flat</span>
+          </button>
+        </div>
 
         <div className="flex items-center bg-slate-900/90 backdrop-blur-md border border-slate-700/80 rounded-lg p-1 shadow-lg">
           <button
