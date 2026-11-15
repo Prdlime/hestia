@@ -32,12 +32,16 @@ const SATELLITE_STYLE: StyleSpecification = {
       tileSize: 256,
       attribution: "Tiles &copy; Esri",
     },
-    "carto-labels": {
+    // Esri's reference overlay (place names + borders) pairs with World Imagery
+    // and needs no API key. The previous Carto raster label tiles now render an
+    // "API KEY REQUIRED" watermark.
+    "esri-labels": {
       type: "raster",
       tiles: [
-        "https://basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}@2x.png",
+        "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
       ],
       tileSize: 256,
+      attribution: "Labels &copy; Esri",
     },
   },
   layers: [
@@ -49,9 +53,9 @@ const SATELLITE_STYLE: StyleSpecification = {
       maxzoom: 19,
     },
     {
-      id: "carto-labels-layer",
+      id: "esri-labels-layer",
       type: "raster",
-      source: "carto-labels",
+      source: "esri-labels",
       minzoom: 0,
       maxzoom: 19,
     },
