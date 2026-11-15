@@ -21,10 +21,11 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import tempfile
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import h3
 import numpy as np
@@ -57,8 +58,136 @@ def get_data_dir() -> Path:
         return Path(tempfile.gettempdir()) / "hestia_data"
 
 
-def _infer_region_name(lat: float, lon: float) -> str:
-    """Assign a human-readable Malaysian region label based on coordinates."""
+# --- Global grid configuration -------------------------------------------------
+# Fires are stored on H3 hexagons. Inside the Southeast Asian study area we keep
+# the fine ~1 km grid (resolution 8); everywhere else a ~7 km grid (resolution 6)
+# keeps a worldwide, multi-decade dataset small enough to ship with the backend.
+FINE_RESOLUTION = 8
+COARSE_RESOLUTION = 6
+
+# (lon_min, lat_min, lon_max, lat_max)
+STUDY_AREA_BBOX = (92.0, -12.0, 142.0, 23.0)
+MALAYSIA_BBOX = (99.0, 0.5, 119.6, 7.6)
+
+
+def _in_bbox(lat: float, lon: float, bbox: Tuple[float, float, float, float]) -> bool:
+    lon_min, lat_min, lon_max, lat_max = bbox
+    return lon_min <= lon <= lon_max and lat_min <= lat <= lat_max
+
+
+def grid_resolution_for(lat: float, lon: float) -> int:
+    """Fine grid within the study area, coarse grid for the rest of the world."""
+    return FINE_RESOLUTION if _in_bbox(lat, lon, STUDY_AREA_BBOX) else COARSE_RESOLUTION
+
+
+# Named fire regions, checked in order; the first box that contains the point wins.
+# Ordered most-specific first so Indonesian sub-regions beat the continental boxes.
+GLOBAL_REGIONS: List[Tuple[Tuple[float, float, float, float], str]] = [
+    ((95.0, -6.0, 107.5, 6.5), "Sumatra & Riau Peatlands"),
+    ((108.5, -4.5, 119.0, 2.5), "Kalimantan (Indonesian Borneo)"),
+    ((105.0, -11.0, 116.0, -5.0), "Java & Bali"),
+    ((116.0, -11.0, 128.0, -5.0), "Nusa Tenggara"),
+    ((118.0, -6.0, 127.0, 2.0), "Sulawesi"),
+    ((127.0, -8.5, 135.0, 3.0), "Maluku Islands"),
+    ((130.0, -11.0, 151.5, 0.5), "New Guinea"),
+    ((116.0, 4.5, 127.0, 21.5), "Philippines"),
+    ((92.0, 5.5, 110.0, 29.0), "Mainland Southeast Asia"),
+    ((60.0, 5.0, 92.0, 37.5), "South Asia"),
+    ((100.0, 20.0, 146.0, 54.0), "East Asia"),
+    ((60.0, 48.0, 180.0, 75.0), "Siberia & Russian Far East"),
+    ((25.0, 12.0, 75.0, 48.0), "Central Asia & Middle East"),
+    ((-18.0, 4.0, 25.0, 16.5), "West African Savanna"),
+    ((8.0, -6.5, 32.0, 6.5), "Congo Basin"),
+    ((28.0, -12.0, 52.0, 18.0), "East Africa"),
+    ((10.0, -35.5, 42.0, -6.0), "Southern Africa"),
+    ((-18.0, 16.5, 36.0, 35.0), "North Africa & Sahara"),
+    ((-12.0, 35.0, 45.0, 72.0), "Europe & Mediterranean"),
+    ((-80.0, -15.0, -45.0, 6.0), "Amazon Basin"),
+    ((-60.0, -25.0, -34.0, -10.0), "Brazilian Cerrado"),
+    ((-76.0, -56.0, -52.0, -25.0), "Southern South America"),
+    ((-82.0, 0.0, -58.0, 13.0), "Northern Andes & Orinoco"),
+    ((-95.0, 7.0, -58.0, 23.5), "Central America & Caribbean"),
+    ((-118.0, 14.0, -86.0, 33.0), "Mexico"),
+    ((-170.0, 30.0, -100.0, 72.0), "Western North America"),
+    ((-100.0, 24.0, -50.0, 60.0), "Eastern North America"),
+    ((113.0, -20.0, 154.0, -9.0), "Northern Australia"),
+    ((138.0, -39.5, 154.0, -20.0), "Eastern Australia"),
+    ((112.0, -39.5, 138.0, -20.0), "Western & Central Australia"),
+    ((165.0, -48.0, 179.5, -33.0), "New Zealand"),
+]
+
+
+# FIRMS archive files are named like "modis_2015_Malaysia.csv" /
+# "viirs-snpp_2020_Indonesia.csv". The country in the filename is far more
+# reliable than guessing from coordinates, which cannot separate Peninsular
+# Malaysia from Sumatra across the Strait of Malacca.
+_SENSOR_FILENAME_PREFIX = re.compile(
+    r"^(modis|viirs[-_a-z0-9]*|fire)[-_](archive[-_])?(\d{4})[-_]", re.IGNORECASE
+)
+
+
+def country_from_filename(path: str) -> Optional[str]:
+    """Pull the country name out of a FIRMS archive filename, if it carries one."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    stripped = _SENSOR_FILENAME_PREFIX.sub("", stem)
+    if stripped == stem:
+        return None
+    name = stripped.replace("_", " ").replace("-", " ").strip()
+    if not name or not all(part.isalpha() for part in name.split()):
+        return None
+    return " ".join(part.capitalize() for part in name.split())
+
+
+# ISO-3166 alpha-3 codes seen in FIRMS exports, for the countries whose fires
+# matter most here. Anything else keeps whatever the file said.
+ISO3_COUNTRY_NAMES = {
+    "MYS": "Malaysia",
+    "IDN": "Indonesia",
+    "SGP": "Singapore",
+    "BRN": "Brunei",
+    "THA": "Thailand",
+    "VNM": "Vietnam",
+    "KHM": "Cambodia",
+    "LAO": "Laos",
+    "MMR": "Myanmar",
+    "PHL": "Philippines",
+    "IND": "India",
+    "CHN": "China",
+    "AUS": "Australia",
+    "BRA": "Brazil",
+    "USA": "United States",
+    "CAN": "Canada",
+    "RUS": "Russia",
+    "COD": "Democratic Republic of the Congo",
+    "AGO": "Angola",
+    "ZMB": "Zambia",
+    "MOZ": "Mozambique",
+    "TZA": "Tanzania",
+    "SDN": "Sudan",
+    "NGA": "Nigeria",
+    "PNG": "Papua New Guinea",
+    "MEX": "Mexico",
+    "ARG": "Argentina",
+    "BOL": "Bolivia",
+    "PRY": "Paraguay",
+    "COL": "Colombia",
+    "VEN": "Venezuela",
+    "PER": "Peru",
+}
+
+
+def normalize_country(value: str) -> Optional[str]:
+    """Turn a country cell value into a display name, expanding ISO-3 codes."""
+    cleaned = (value or "").strip()
+    if not cleaned or cleaned.lower() in {"nan", "none", "null"}:
+        return None
+    if len(cleaned) == 3 and cleaned.isalpha():
+        return ISO3_COUNTRY_NAMES.get(cleaned.upper(), cleaned.upper())
+    return cleaned
+
+
+def _malaysian_region(lat: float, lon: float) -> str:
+    """State / peatland level detail for Malaysian coordinates."""
     if lon < 105.0:
         if lat < 2.4:
             return "Johor Southern Corridor"
@@ -67,12 +196,47 @@ def _infer_region_name(lat: float, lon: float) -> str:
         if lon < 102.0 and 2.5 <= lat <= 3.8:
             return "Selangor Peatlands (Kuala Langat)"
         return "Peninsular Malaysia Northern Belt"
-    else:
-        if lat > 4.6 and lon > 115.0:
-            return "Sabah (Klias & Kinabatangan)"
-        if lat > 3.5:
-            return "Sarawak Miri & Baram Basin"
-        return "Sarawak Central & Coastal Peatlands"
+    if lat > 4.6 and lon > 115.0:
+        return "Sabah (Klias & Kinabatangan)"
+    if lat > 3.5:
+        return "Sarawak Miri & Baram Basin"
+    return "Sarawak Central & Coastal Peatlands"
+
+
+def region_name_for(lat: float, lon: float, country: Optional[str] = None) -> str:
+    """Region label for a fire, preferring the country the source file declared."""
+    if country:
+        normalized = country.strip().lower()
+        if normalized == "malaysia":
+            return _malaysian_region(lat, lon)
+        if normalized == "indonesia":
+            # Indonesia spans the archipelago; keep island-level detail because
+            # Sumatran and Kalimantan peat fires drive the regional haze.
+            for bbox, name in GLOBAL_REGIONS:
+                if _in_bbox(lat, lon, bbox):
+                    return name
+            return "Indonesia"
+        return country
+
+    return _infer_region_name(lat, lon)
+
+
+def _infer_region_name(lat: float, lon: float) -> str:
+    """Fall back to geography when the source file does not name a country."""
+    # Malaysian detail is kept at state / peatland level for the study area.
+    if _in_bbox(lat, lon, MALAYSIA_BBOX):
+        return _malaysian_region(lat, lon)
+
+    for bbox, name in GLOBAL_REGIONS:
+        if _in_bbox(lat, lon, bbox):
+            return name
+
+    # Anything left over: label by hemisphere band rather than inventing a place.
+    if lat >= 60.0:
+        return "Arctic & Boreal"
+    if lat <= -60.0:
+        return "Antarctic"
+    return "Open Ocean & Remote Islands"
 
 
 def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dict]]:
@@ -94,7 +258,9 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
         lats = raw_df[lat_col].cast(pl.Float64).to_list()
         lons = raw_df[lon_col].cast(pl.Float64).to_list()
         h3_cells = [
-            h3.latlng_to_cell(float(la), float(lo), 8)
+            h3.latlng_to_cell(
+                float(la), float(lo), grid_resolution_for(float(la), float(lo))
+            )
             for la, lo in zip(lats, lons)
         ]
 
@@ -115,12 +281,26 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
             else [20.0] * len(h3_cells)
         )
 
+        # The filename is the most reliable source; the country_id column holds
+        # ISO codes ("MYS") that need translating before they reach a map label.
+        file_country = country_from_filename(path)
+        country_col = cols_lower.get("country_id") or cols_lower.get("country")
+        if file_country:
+            countries = [file_country] * len(h3_cells)
+        elif country_col:
+            countries = [
+                normalize_country(str(v)) for v in raw_df[country_col].to_list()
+            ]
+        else:
+            countries = [None] * len(h3_cells)
+
         standardized = pl.DataFrame(
             {
                 "h3_index": h3_cells,
                 "acq_date": raw_df[date_col].cast(pl.Utf8).str.to_date("%Y-%m-%d", strict=False),
                 "sensor": sensors,
                 "frp": frps,
+                "country": pl.Series(countries, dtype=pl.Utf8),
             }
         ).drop_nulls(["h3_index", "acq_date"])
 
@@ -158,6 +338,18 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
         pl.col("viirs_frp").fill_null(0.0).cast(pl.Float64),
     )
 
+    # Most frequent country per cell; a hexagon is small enough that this is
+    # unambiguous except right on a border.
+    cell_country = {
+        row["h3_index"]: row["country"]
+        for row in combined.drop_nulls("country")
+        .group_by(["h3_index", "country"])
+        .agg(pl.len().alias("n"))
+        .sort(["h3_index", "n"], descending=[False, True])
+        .unique(subset=["h3_index"], keep="first")
+        .to_dicts()
+    }
+
     unique_cells = daily["h3_index"].unique().to_list()
     hex_pool = []
     for cell_id in unique_cells:
@@ -167,7 +359,7 @@ def _ingest_raw_firms_csvs(csv_paths: List[str]) -> Tuple[pl.DataFrame, List[Dic
                 "h3_index": cell_id,
                 "cell_lat": round(c_lat, 6),
                 "cell_lon": round(c_lon, 6),
-                "region_name": _infer_region_name(c_lat, c_lon),
+                "region_name": region_name_for(c_lat, c_lon, cell_country.get(cell_id)),
             }
         )
 
@@ -299,7 +491,10 @@ def run_harmonization_pipeline(force: bool = False) -> Dict:
 
     metadata = {
         "source_mode": source_mode,
-        "h3_resolution": 8,
+        "h3_resolution": FINE_RESOLUTION,
+        "h3_resolution_fine": FINE_RESOLUTION,
+        "h3_resolution_coarse": COARSE_RESOLUTION,
+        "study_area_bbox": list(STUDY_AREA_BBOX),
         "calibration_alpha_count": alpha_count,
         "calibration_gamma_frp": gamma_frp,
         "overlap_sample_size": int(overlap_df.height),
