@@ -19,7 +19,7 @@ data/**/*.json
 # serve it without running the ETL.
 !backend/data/*.parquet
 !backend/data/metadata.json
-data/raw/*.csv
+data/raw/*
 !data/raw/.gitkeep
 
 # OS / IDE

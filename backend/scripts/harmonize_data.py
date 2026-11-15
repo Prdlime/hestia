@@ -18,7 +18,6 @@ Harmonization Model (Overlap Regression Calibration + Daily H3 Fusion):
 
 from __future__ import annotations
 
-import glob
 import json
 import os
 import re
@@ -33,6 +32,20 @@ import polars as pl
 
 from app.datapaths import get_data_dir
 from scripts.sample_malaysia import generate_malaysia_raw_observations
+
+# --- Global grid configuration -------------------------------------------------
+# Fires are stored on H3 hexagons. Inside the Southeast Asian study area we keep
+# the fine ~1 km grid (resolution 8); everywhere else a coarse grid (resolution 4)
+# keeps a worldwide, multi-decade dataset small enough to ship with the backend.
+FINE_RESOLUTION = 8
+COARSE_RESOLUTION = int(os.environ.get("HESTIA_COARSE_RESOLUTION", "4"))
+
+# Outside the study area, fires are bucketed into ISO weeks rather than days.
+COARSE_WEEKLY = os.environ.get("HESTIA_COARSE_WEEKLY", "1") != "0"
+
+# (lon_min, lat_min, lon_max, lat_max)
+STUDY_AREA_BBOX: Tuple[float, float, float, float] = (92.0, -12.0, 142.0, 23.0)
+MALAYSIA_BBOX: Tuple[float, float, float, float] = (99.0, 0.5, 119.6, 7.6)
 
 
 def _in_bbox(lat: float, lon: float, bbox: Tuple[float, float, float, float]) -> bool:
@@ -459,7 +472,7 @@ def run_harmonization_pipeline(force: bool = False) -> Dict:
         with open(metadata_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    csv_files = sorted(glob.glob(str(raw_dir / "*.csv")))
+    csv_files = sorted(str(p) for p in raw_dir.rglob("*.csv"))
     if csv_files:
         print(f"[ETL] Found {len(csv_files)} raw NASA FIRMS CSV file(s). Ingesting...")
         daily_df, hex_pool = _ingest_raw_firms_csvs(csv_files)
