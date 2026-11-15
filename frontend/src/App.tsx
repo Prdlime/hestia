@@ -891,10 +891,10 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Main Split Workspace: Left Interactive Map (50%) | Right Calendar & Trend (50%) */}
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-3 min-h-[640px]">
-          {/* Left Column: Interactive Map UI */}
-          <div className="lg:col-span-6 h-[460px] lg:h-auto flex flex-col">
+        {/* Workspace: full-width Interactive Map on top, Calendar & Trend side by side below */}
+        <div className="flex flex-col gap-3">
+          {/* Top Row: Interactive Map UI (full width) */}
+          <div className="h-[460px] lg:h-[60vh] lg:min-h-[480px] lg:max-h-[760px] flex flex-col">
             <MapView
               hexData={hexData}
               aoi={aoi}
@@ -907,9 +907,9 @@ export const App: React.FC = () => {
             />
           </div>
 
-          {/* Right Column: Burning Activity Calendar & Burning Activity Trend */}
-          <div className="lg:col-span-6 flex flex-col gap-3">
-            <div className="flex-[1.25] min-h-[280px]">
+          {/* Bottom Row: Burning Activity Calendar | Burning Activity Trend */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div className="h-[360px]">
               <CalendarHeatmap
                 timeSeries={calendarSeries}
                 summary={calendarSummary}
@@ -919,7 +919,7 @@ export const App: React.FC = () => {
               />
             </div>
 
-            <div className="flex-1 min-h-[235px]">
+            <div className="h-[360px]">
               <ClimatologyChart
                 trendPoints={trendSeries}
                 timescale={timescale}
